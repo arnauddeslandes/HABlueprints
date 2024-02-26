@@ -2,7 +2,7 @@ blueprint:
   name: ZHA - Legrand Wireless Remote Switch (Double Rocker)
   description: Automate your Legrand Wireless Remote Switch (Double Rocker) using ZHA events.
   domain: automation
-  source_url: 
+  source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zha-legrand-double-rocker.yaml
   
   # Blueprint Inputs
   input:
