@@ -5,7 +5,7 @@ blueprint:
   input:
     remote:
       name: Remote
-      description: Legrand open/close/stop remote to use
+      description: Legrand open/close/stop remote to use 
       selector:
         device:
           integration: zha
