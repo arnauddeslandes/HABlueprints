@@ -16,14 +16,14 @@ blueprint:
           entity:
             domain: sensor
             device_class: battery
-    button_single_press_left:
-      name: Single Press Left
-      description: Action to run on single press
+    button_on_left:
+      name: on left
+      description: Action to run on on left 
       default: []
       selector:
         action:
-    button_double_press_left:
-      name: Double Press Left
+    button_off_left:
+      name: off Left
       description: Action to run on double press
       default: []
       selector:
