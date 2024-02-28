@@ -12,7 +12,7 @@ blueprint:
       selector:
         device:
           integration: zha
-#          manufacturer: _TZ3000_5e235jpa
+#          manufacturer: Legrand
           entity:
             domain: sensor
             device_class: battery
@@ -24,7 +24,19 @@ blueprint:
         action:
     button_off_left:
       name: off Left
-      description: Action to run on double press
+      description: Action to run on off left
+      default: []
+      selector:
+        action:
+   button_on_right:
+      name: on right
+      description: Action to run on on right
+      default: []
+      selector:
+        action:
+   button_off_right:
+      name: off right
+      description: Action to run on off right
       default: []
       selector:
         action:
@@ -51,6 +63,12 @@ action:
       - conditions:
           - '{{ command == ''off'' and endpoint_id == 1}}'
         sequence: !input button_off_left
+      - conditions:
+          - '{{ command == ''on'' and endpoint_id == 0}}'
+        sequence: !input button_on_right
+      - conditions:
+          - '{{ command == ''off'' and endpoint_id == 0}}'
+        sequence: !input button_off_right
         
-mode: restart
+mode: single
 max_exceeded: silent

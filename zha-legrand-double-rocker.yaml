@@ -12,7 +12,7 @@ blueprint:
       selector:
         device:
           integration: zha
-#          manufacturer: _TZ3000_5e235jpa
+#          manufacturer: _TZ3000_5e235jpaLegrand
           entity:
             domain: sensor
             device_class: battery
@@ -90,5 +90,4 @@ action:
         sequence: !input button_long_press_right
 
         
-mode: restart
-max_exceeded: silent
+mode: single
