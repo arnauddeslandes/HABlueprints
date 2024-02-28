@@ -28,13 +28,13 @@ blueprint:
       default: []
       selector:
         action:
-   button_on_right:
+    button_on_right:
       name: on right
       description: Action to run on on right
       default: []
       selector:
         action:
-   button_off_right:
+    button_off_right:
       name: off right
       description: Action to run on off right
       default: []
