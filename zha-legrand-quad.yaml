@@ -72,10 +72,10 @@ action:
   - choose:
       - conditions:
           - '{{ command == ''on'' and endpoint_id == 1}}'
-        sequence: !input button_single_press_left
+        sequence: !input button_on_left
       - conditions:
           - '{{ command == ''remote_button_double_press'' and endpoint_id == 1}}'
-        sequence: !input button_double_press_left
+        sequence: !input button_off_press_left
       - conditions:
           - '{{ command == ''remote_button_long_press'' and endpoint_id == 1}}'
         sequence: !input button_long_press_left
