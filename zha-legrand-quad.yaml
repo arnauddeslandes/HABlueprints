@@ -71,7 +71,7 @@ action:
 
   - choose:
       - conditions:
-          - '{{ command == ''open'' and endpoint_id == 1}}'
+          - '{{ command == ''on'' and endpoint_id == 1}}'
         sequence: !input button_single_press_left
       - conditions:
           - '{{ command == ''remote_button_double_press'' and endpoint_id == 1}}'
