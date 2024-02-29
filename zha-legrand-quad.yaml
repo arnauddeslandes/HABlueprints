@@ -64,10 +64,10 @@ action:
           - '{{ command == ''off'' and endpoint_id == 1}}'
         sequence: !input button_off_left
       - conditions:
-          - '{{ command == ''on'' and endpoint_id == 0}}'
+          - '{{ command == ''on'' and endpoint_id == 2}}'
         sequence: !input button_on_right
       - conditions:
-          - '{{ command == ''off'' and endpoint_id == 0}}'
+          - '{{ command == ''off'' and endpoint_id == 2}}'
         sequence: !input button_off_right
         
 mode: single
