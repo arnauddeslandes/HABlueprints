@@ -42,4 +42,4 @@ action:
     sequence:
     - service: cover.stop_cover
       target: !input cover
-mode: single
+mode: restart
