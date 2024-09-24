@@ -1,0 +1,57 @@
+blueprint:
+  name: ZHA - Legrand Wireless Remote Switch
+  description: Automate your Legrand Wireless Remote Switch using ZHA events.
+  domain: automation
+  source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zha-legrand-switch.yaml
+  
+  # Blueprint Inputs
+  input:
+    remote_switch:
+      name: Select the Legrand Wireless Remote Switch
+      description: Legrand Wireless Remote Switch
+      selector:
+        device:
+          integration: zha
+#          manufacturer: Legrand
+          entity:
+            domain: sensor
+            device_class: battery
+    button_on_left:
+      name: on left
+      description: Action to run on on left 
+      default: []
+      selector:
+        action:
+    button_off_left:
+      name: off Left
+      description: Action to run on off left
+      default: []
+      selector:
+        action:
+
+
+# Triggers
+trigger:
+  - platform: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote_switch
+
+
+# Actions
+action:
+  - variables:
+      endpoint_id:  '{{ trigger.event.data.endpoint_id | int }}'
+      command: '{{ trigger.event.data.command }}'
+
+
+  - choose:
+      - conditions:
+          - '{{ command == ''on'' and endpoint_id == 1}}'
+        sequence: !input button_on_left
+      - conditions:
+          - '{{ command == ''off'' and endpoint_id == 1}}'
+        sequence: !input button_off_left
+
+        
+mode: single
