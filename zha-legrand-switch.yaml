@@ -16,15 +16,15 @@ blueprint:
           entity:
             domain: sensor
             device_class: battery
-    button_on_left:
-      name: on left
-      description: Action to run on on left 
+    button_on:
+      name: on
+      description: Action to run when on
       default: []
       selector:
         action:
-    button_off_left:
-      name: off Left
-      description: Action to run on off left
+    button_off:
+      name: off
+      description: Action to run when off
       default: []
       selector:
         action:
@@ -48,10 +48,10 @@ action:
   - choose:
       - conditions:
           - '{{ command == ''on'' and endpoint_id == 1}}'
-        sequence: !input button_on_left
+        sequence: !input button_on
       - conditions:
           - '{{ command == ''off'' and endpoint_id == 1}}'
-        sequence: !input button_off_left
+        sequence: !input button_off
 
         
 mode: single
