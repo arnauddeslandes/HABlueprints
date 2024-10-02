@@ -60,6 +60,7 @@ trigger:
 action:
   - variables:
       command: "{{ trigger.to_state.state }}"
+      attribute: action
   - choose:
       - conditions:
           - "{{ command == 'on_left' }}"
