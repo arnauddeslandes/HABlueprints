@@ -1,0 +1,75 @@
+blueprint:
+  name: Zigbee2MQTT - Legrand double gang
+  description: Automate your Legrand / Netatmo wireless switch via Zigbee2MQTT. Single press for now.
+  domain: automation
+  input:
+    mode:
+      name: Automation Modes
+      description: https://www.home-assistant.io/docs/automation/modes/
+      default: parallel
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - single
+            - restart
+            - queued
+            - parallel
+          multiple: false
+          sort: false
+          custom_value: false
+    switch:
+      name: Legrand / Netatmo wireless switch
+      description: The Switch to use
+      selector:
+        entity:
+          integration: mqtt
+          domain: sensor
+          multiple: false
+    button_on_left_short_press:
+      name: Single Press - On Left
+      description: Action to run on button On Left single press
+      default: []
+      selector:
+        action: {}
+    button_off_left_short_press:
+      name: Single Press - Off Left
+      description: Action to run on button Off Left single press
+      default: []
+      selector:
+        action: {}
+    button_on_right_short_press:
+      name: Single Press - Button On Right
+      description: Action to run on button On Right single press
+      default: []
+      selector:
+        action: {}
+    button_off_right_short_press:
+      name: Single Press - Button Off Right
+      description: Action to run on button Off Right single press
+      default: []
+      selector:
+        action: {}
+  source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zigbee2mqtt-legrand-double-gang.yaml
+mode: !input mode
+max_exceeded: silent
+trigger:
+  - platform: state
+    entity_id: !input "switch"
+    attribute: action
+action:
+  - variables:
+      command: "{{ trigger.to_state.state }}"
+  - choose:
+      - conditions:
+          - "{{ command == 'on_left' }}"
+        sequence: !input "button_on_left_short_press"
+      - conditions:
+          - "{{ command == 'off_left' }}"
+        sequence: !input "button_off_left_short_press"
+      - conditions:
+          - "{{ command == 'on_right' }}"
+        sequence: !input "button_on_right_short_press"
+      - conditions:
+          - "{{ command == 'off_right' }}"
+        sequence: !input "button_off_right_short_press"
