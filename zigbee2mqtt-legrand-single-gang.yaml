@@ -1,0 +1,59 @@
+blueprint:
+  name: Legrand wireless on/off/dimmer switch
+  description: Legrand wireless on/off/dimmer switch
+  domain: automation
+  input:
+    remote:
+      name: Remote
+      description: Legrand remote switch
+      selector:
+        entity:
+          integration: mqtt
+          domain: sensor
+    on_button_short:
+      name: On button short
+      description: Action to run when ON button SHORT press
+      default: []
+      selector:
+        action: {}
+    off_button_short:
+      name: Off button short
+      description: Action to run when OFF button SHORT pressed
+      default: []
+      selector:
+        action: {}
+    on_button_long:
+      name: On button long
+      description: Action to run when ON button LONG pressed (brightness up)
+      default: []
+      selector:
+        action: {}
+    off_button_long:
+      name: Off button long
+      description: Action to run when OFF button LONG pressed (brightness down)
+      default: []
+      selector:
+        action: {}
+  source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zigbee2mqtt-legrand-single-gang.yaml
+mode: restart
+max_exceeded: silent
+trigger:
+  - platform: state
+    entity_id: !input "remote"
+    attribute: action
+action:
+  - variables:
+      command: "{{ trigger.to_state.state }}"
+  - choose:
+      - conditions:
+          - "{{ command == 'on' }}"
+        sequence: !input "on_button_short"
+      - conditions:
+          - "{{ command == 'off' }}"
+        sequence: !input "off_button_short"
+      - conditions:
+          - "{{ command == 'brightness_move_up' }}"
+        sequence: !input "on_button_long"
+      - conditions:
+          - "{{ command == 'brightness_move_down' }}"
+        sequence: !input "off_button_long"
