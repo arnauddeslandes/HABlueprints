@@ -1,0 +1,67 @@
+blueprint:
+  name: Legrand cover remote
+  description: Legrand cover remote
+  domain: automation
+  input:
+    remote:
+      name: Remote
+      description: Legrand remote
+      selector:
+        entity:
+          integration: mqtt
+          domain: sensor
+    open_short:
+      name: Open
+      description: Action to run when open SHORT press
+      default: []
+      selector:
+        action: {}
+    close_short:
+      name: Close
+      description: Action to run when close SHORT press
+      default: []
+      selector:
+        action: {}
+    stop_short:
+      name: Stop
+      description: Action to run when stop SHORT press
+      default: []
+      selector:
+        action: {}
+    stopped:
+      name: Action when stopped
+      description: Action to run when stopped info is received
+      default: []
+      selector:
+        action: {}
+    moving:
+      name: Action when moving
+      description: Action to run when moving info is received
+      default: []
+      selector:
+        action: {}
+  source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zigbee2mqtt-legrand-cover.yaml
+mode: restart
+max_exceeded: silent
+trigger:
+  - platform: state
+    entity_id: !input "remote"
+action:
+  - variables:
+      command: "{{ trigger.to_state.state }}"
+  - choose:
+      - conditions:
+          - "{{ command == 'open' }}"
+        sequence: !input "open_short"
+      - conditions:
+          - "{{ command == 'close' }}"
+        sequence: !input "close_short"
+      - conditions:
+          - "{{ command == 'stop' }}"
+        sequence: !input "stop_short"
+      - conditions:
+          - "{{ command == 'stopped' }}"
+        sequence: !input "stopped"
+      - conditions:
+          - "{{ command == 'moving' }}"
+        sequence: !input "moving"
