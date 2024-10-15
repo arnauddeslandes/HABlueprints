@@ -37,10 +37,6 @@ trigger:
 variables:
     command: "{{ trigger.to_state.state }}"
 
-condition:
-  - condition: template
-    value_template: "{{ command != ''}}"
-
 action:
   - choose:
       - conditions:
