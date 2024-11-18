@@ -51,7 +51,7 @@ trigger:
     entity_id: !input "remote"
 action:
   - variables:
-    command: "{{ trigger.to_state.state }}"
+      command: "{{ trigger.to_state.state }}"
   - choose:
       - conditions:
           - "{{ command == 'open' }}"
