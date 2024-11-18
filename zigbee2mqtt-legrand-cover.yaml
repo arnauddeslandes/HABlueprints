@@ -1,5 +1,5 @@
 blueprint:
-  name: Legrand cover remote
+  name: Zigbee2MQTT - Legrand cover remote
   description: Legrand cover remote
   domain: automation
   input:

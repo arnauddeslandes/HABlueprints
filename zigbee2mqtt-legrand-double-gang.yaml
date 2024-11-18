@@ -56,9 +56,12 @@ max_exceeded: silent
 trigger:
   - platform: state
     entity_id: !input "switch"
+variables:
+  command: '{{ trigger.to_state.state }}'
+condition:
+  - condition: template
+    value_template: "{{ command == 'open' or command == 'close' or command == 'stop'}}"
 action:
-  - variables:
-      command: "{{ trigger.to_state.state }}"
   - choose:
       - conditions:
           - "{{ command == 'on_left' }}"
