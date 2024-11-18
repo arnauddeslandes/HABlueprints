@@ -3,6 +3,21 @@ blueprint:
   description: Legrand cover remote
   domain: automation
   input:
+    mode:
+      name: Automation Modes
+      description: https://www.home-assistant.io/docs/automation/modes/
+      default: parallel
+      selector:
+        select:
+          mode: dropdown
+          options:
+            - single
+            - restart
+            - queued
+            - parallel
+          multiple: false
+          sort: false
+          custom_value: false
     remote:
       name: Remote
       description: Legrand remote
@@ -29,19 +44,14 @@ blueprint:
       selector:
         action: {}
   source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zigbee2mqtt-legrand-cover.yaml
-mode: restart
+mode: !input "mode"
 max_exceeded: silent
 trigger:
   - platform: state
     entity_id: !input "remote"
-variables:
-    command: "{{ trigger.to_state.state }}"
-
-condition:
-  - condition: template
-    value_template: "{{ command != ''}}"
-
 action:
+  - variables:
+    command: "{{ trigger.to_state.state }}"
   - choose:
       - conditions:
           - "{{ command == 'open' }}"
