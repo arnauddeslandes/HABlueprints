@@ -5,7 +5,7 @@ blueprint:
   input:
     mode:
       name: Automation Modes
-      description: https://www.home-assistant.io/docs/automation/modes/
+      description:
       default: parallel
       selector:
         select:
@@ -18,47 +18,66 @@ blueprint:
           multiple: false
           sort: false
           custom_value: false
-    remote:
+    remote_device:
       name: Remote
-      description: Legrand remote
+      description: Cover Remote
       selector:
-        entity:
-          integration: mqtt
-          domain: sensor
-    open_short:
+        device:
+          filter:
+            - integration: mqtt
+    action_open:
       name: Open
-      description: Action to run when open SHORT press
+      description: Action to run when open  press
       default: []
       selector:
         action: {}
-    close_short:
+    action_close:
       name: Close
-      description: Action to run when close SHORT press
+      description: Action to run when close  press
       default: []
       selector:
         action: {}
-    stop_short:
+    action_stop_short:
       name: Stop
-      description: Action to run when stop SHORT press
+      description: Action to run when stop  press
       default: []
       selector:
         action: {}
   source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zigbee2mqtt-legrand-cover.yaml
 mode: !input "mode"
 max_exceeded: silent
-trigger:
-  - platform: state
-    entity_id: !input "remote"
-action:
-  - variables:
-      command: "{{ trigger.to_state.state }}"
+triggers:
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "open"
+    id: "open"
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "close"
+    id: "close"
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "stop"
+    id: "stop"
+
+conditions: []
+actions:
   - choose:
       - conditions:
-          - "{{ command == 'open' }}"
-        sequence: !input "open_short"
+          - condition: trigger
+            id: "open"
+        sequence: !input action_open
       - conditions:
-          - "{{ command == 'close' }}"
-        sequence: !input "close_short"
+          - condition: trigger
+            id: "close"
+        sequence: !input action_close
       - conditions:
-          - "{{ command == 'stop' }}"
-        sequence: !input "stop_short"
+          - condition: trigger
+            id: "stop"
+        sequence: !input action_stop
