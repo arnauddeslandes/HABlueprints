@@ -2,22 +2,8 @@ blueprint:
   name: Zigbee2MQTT - Legrand cover remote
   description: Legrand cover remote
   domain: automation
+
   input:
-    mode:
-      name: Automation Modes
-      description:
-      default: parallel
-      selector:
-        select:
-          mode: dropdown
-          options:
-            - single
-            - restart
-            - queued
-            - parallel
-          multiple: false
-          sort: false
-          custom_value: false
     remote_device:
       name: Remote
       description: Cover Remote
@@ -44,8 +30,8 @@ blueprint:
       selector:
         action: {}
   source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zigbee2mqtt-legrand-cover.yaml
-mode: !input "mode"
-max_exceeded: silent
+mode: parallel
+max: 10
 triggers:
   - platform: device
     device_id: !input remote_device
