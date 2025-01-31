@@ -23,7 +23,7 @@ blueprint:
       default: []
       selector:
         action: {}
-    action_stop_short:
+    action_stop:
       name: Stop
       description: Action to run when stop  press
       default: []
