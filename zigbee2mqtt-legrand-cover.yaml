@@ -1,6 +1,6 @@
 blueprint:
   name: Zigbee2MQTT - Legrand cover remote
-  description: Legrand cover remote
+  description: Legrand cover remote Z2M V2.0+
   domain: automation
 
   input:

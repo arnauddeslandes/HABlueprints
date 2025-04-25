@@ -73,7 +73,7 @@ actions:
       - conditions:
           - condition: trigger
             id: "off_left"
-        sequence: !input button_on_left_short_press
+        sequence: !input button_off_left_short_press
       - conditions:
           - condition: trigger
             id: "on_right"
@@ -81,4 +81,4 @@ actions:
       - conditions:
           - condition: trigger
             id: "off_right"
-        sequence: !input button_off_left_short_press
+        sequence: !input button_off_right_short_press
