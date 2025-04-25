@@ -1,31 +1,16 @@
 blueprint:
-  name: Zigbee2MQTT - Legrand double gang
-  description: Automate your Legrand / Netatmo wireless switch via Zigbee2MQTT. Single press for now.
+  name: Zigbee2MQTT - Legrand double gang remote
+  description: Automate your Legrand / Netatmo wireless switch via Zigbee2MQTT. Z2M V2.0+
   domain: automation
+
   input:
-    mode:
-      name: Automation Modes
-      description: https://www.home-assistant.io/docs/automation/modes/
-      default: parallel
+    remote_device:
+      name: Legrand / Netatmo wireless remote
+      description: Double gang remote
       selector:
-        select:
-          mode: dropdown
-          options:
-            - single
-            - restart
-            - queued
-            - parallel
-          multiple: false
-          sort: false
-          custom_value: false
-    switch:
-      name: Legrand / Netatmo wireless switch
-      description: The Switch to use
-      selector:
-        entity:
-          integration: mqtt
-          domain: sensor
-          multiple: false
+        device:
+          filter:
+            integration: mqtt
     button_on_left_short_press:
       name: Single Press - On Left
       description: Action to run on button On Left single press
@@ -51,27 +36,49 @@ blueprint:
       selector:
         action: {}
   source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zigbee2mqtt-legrand-double-gang.yaml
-mode: !input mode
-max_exceeded: silent
-trigger:
-  - platform: state
-    entity_id: !input "switch"
-variables:
-  command: '{{ trigger.to_state.state }}'
-condition:
-  - condition: template
-    value_template: "{{ command == 'open' or command == 'close' or command == 'stop'}}"
-action:
+mode: parallel
+triggers:
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "on_left"
+    id: "on_left"
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "off_left"
+    id: "off_left"
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "on_right"
+    id: "on_right"
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "off_right"
+    id: "off_right"
+
+conditions: []
+actions:
   - choose:
       - conditions:
-          - "{{ command == 'on_left' }}"
-        sequence: !input "button_on_left_short_press"
+          - condition: trigger
+            id: "on_left"
+        sequence: !input button_on_left_short_press
       - conditions:
-          - "{{ command == 'off_left' }}"
-        sequence: !input "button_off_left_short_press"
+          - condition: trigger
+            id: "off_left"
+        sequence: !input button_on_left_short_press
       - conditions:
-          - "{{ command == 'on_right' }}"
-        sequence: !input "button_on_right_short_press"
+          - condition: trigger
+            id: "on_right"
+        sequence: !input button_on_right_short_press
       - conditions:
-          - "{{ command == 'off_right' }}"
-        sequence: !input "button_off_right_short_press"
+          - condition: trigger
+            id: "off_right"
+        sequence: !input button_off_left_short_press
