@@ -54,4 +54,4 @@ action:
         sequence: !input button_off
 
         
-mode: single
+mode: restart
