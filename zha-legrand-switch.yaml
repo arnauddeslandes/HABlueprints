@@ -17,13 +17,13 @@ blueprint:
             domain: sensor
             device_class: battery
     button_on:
-      name: on
+      name: button_on
       description: Action to run when on
       default: []
       selector:
         action:
     button_off:
-      name: off
+      name: button_off
       description: Action to run when off
       default: []
       selector:
