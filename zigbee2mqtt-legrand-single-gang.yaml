@@ -27,17 +27,17 @@ blueprint:
 mode: restart
 triggers:
   - platform: device
-      device_id: !input remote_device
-      domain: mqtt
-      type: action
-      subtype: "toggle"
-      id: "toggle"
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "toggle"
+    id: "toggle"
   - platform: device
-      device_id: !input remote_device
-      domain: mqtt
-      type: action
-      subtype: "off"
-      id: "off"
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "off"
+    id: "off"
 conditions: []
 actions:
   - choose:
