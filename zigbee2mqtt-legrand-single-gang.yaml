@@ -5,7 +5,7 @@ blueprint:
   
   input:
     remote_device:
-      name: Remote
+      name: Legrand / Netatmo wireless remote
       description: Legrand remote switch
       selector:
         device:
