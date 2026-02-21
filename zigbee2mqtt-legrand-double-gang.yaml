@@ -17,6 +17,12 @@ blueprint:
       default: []
       selector:
         action: {}
+    button_toggle_left_short_press:
+      name: Single Press - toggle Left
+      description: Action to run on button toggle Left single press
+      default: []
+      selector:
+        action: {}
     button_off_left_short_press:
       name: Single Press - Off Left
       description: Action to run on button Off Left single press
@@ -25,6 +31,12 @@ blueprint:
         action: {}
     button_on_right_short_press:
       name: Single Press - Button On Right
+      description: Action to run on button On Right single press
+      default: []
+      selector:
+        action: {}
+    button_toggle_right_short_press:
+      name: Single Press - toggle On Right
       description: Action to run on button On Right single press
       default: []
       selector:
@@ -48,6 +60,12 @@ triggers:
     device_id: !input remote_device
     domain: mqtt
     type: action
+    subtype: "toggle_left"
+    id: "toggle_left"
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
     subtype: "off_left"
     id: "off_left"
   - platform: device
@@ -56,6 +74,12 @@ triggers:
     type: action
     subtype: "on_right"
     id: "on_right"
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "toggle_right"
+    id: "toggle_right"
   - platform: device
     device_id: !input remote_device
     domain: mqtt
@@ -72,12 +96,20 @@ actions:
         sequence: !input button_on_left_short_press
       - conditions:
           - condition: trigger
+            id: "toggle_left"
+        sequence: !input button_toggle_left_short_press
+      - conditions:
+          - condition: trigger
             id: "off_left"
         sequence: !input button_off_left_short_press
       - conditions:
           - condition: trigger
             id: "on_right"
         sequence: !input button_on_right_short_press
+      - conditions:
+          - condition: trigger
+            id: "toggle_right"
+        sequence: !input button_toggle_right_short_press
       - conditions:
           - condition: trigger
             id: "off_right"
