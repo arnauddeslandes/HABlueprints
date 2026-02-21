@@ -23,6 +23,12 @@ blueprint:
       default: []
       selector:
         action: {}
+    on_button:
+      name: On button short
+      description: Action to run when ON
+      default: []
+      selector:
+        action: {}
   source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zigbee2mqtt-legrand-single-gang.yaml
 mode: restart
 triggers:
@@ -38,6 +44,12 @@ triggers:
     type: action
     subtype: "off"
     id: "off"
+  - platform: device
+    device_id: !input remote_device
+    domain: mqtt
+    type: action
+    subtype: "on"
+    id: "on"
 conditions: []
 actions:
   - choose:
@@ -49,3 +61,7 @@ actions:
           - condition: trigger
             id: "off"
         sequence: !input off_button
+      - conditions:
+          - condition: trigger
+            id: "on"
+        sequence: !input on_button
