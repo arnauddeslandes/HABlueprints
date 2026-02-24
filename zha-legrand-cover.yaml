@@ -1,5 +1,5 @@
 blueprint:
-  name: Cover control with Legrand
+  name: ZHA Cover control for Legrand Netatmo Remote Switch
   description: 'Control a Legrand Zigbee open/close/stop button remote with ZHA'
   domain: automation
   input:
@@ -9,7 +9,6 @@ blueprint:
       selector:
         device:
           integration: zha
-
           multiple: false
     cover:
       name: Cover
