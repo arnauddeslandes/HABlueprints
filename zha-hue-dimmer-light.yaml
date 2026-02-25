@@ -1,11 +1,6 @@
 blueprint:
 name: Philips Hue Dimmer v2 - ZHA
-description: >
-Contrôle une lumière avec le Philips Hue Dimmer Switch v2 via ZHA.
-- Bouton ON  : allume la lumière
-- Bouton OFF : éteint la lumière
-- Bouton +   : augmente la luminosité (appui court ou long)
-- Bouton -   : baisse la luminosité (appui court ou long)
+description: Contrôle une lumière avec le Philips Hue Dimmer Switch v2 via ZHA.
 domain: automation
 input:
 remote:
@@ -17,7 +12,7 @@ integration: zha
 manufacturer: Signify Netherlands B.V.
 model: RWL022
 
-```
+
 light:
   name: Lumière à contrôler
   description: Sélectionner la lumière ou le groupe de lumières à contrôler.
@@ -46,7 +41,7 @@ transition_time:
       max: 5
       step: 0.5
       unit_of_measurement: "s"
-```
+
 
 mode: restart
 max_exceeded: silent
