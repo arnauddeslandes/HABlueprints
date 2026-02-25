@@ -1,0 +1,186 @@
+blueprint:
+  name: ZHA - Philips Hue Dimmer Switch v2
+  description: >
+    Contrôle une lumière avec le Philips Hue Dimmer Switch v2 (RWL022) via ZHA.
+
+    - Bouton On (court) : allumer la lumière
+    - Bouton On (long)  : allumer à pleine luminosité (100 %)
+    - Bouton +  (court) : augmenter la luminosité d'un pas
+    - Bouton +  (long)  : augmenter la luminosité progressivement
+    - Bouton -  (court) : baisser la luminosité d'un pas
+    - Bouton -  (long)  : baisser la luminosité progressivement
+    - Bouton Off (court) : éteindre la lumière
+  domain: automation
+  input:
+    remote:
+      name: Télécommande Hue Dimmer v2
+      description: Sélectionner la télécommande Philips Hue Dimmer Switch v2 associée via ZHA.
+      selector:
+        device:
+          integration: zha
+          manufacturer: Signify Netherlands B.V.
+          model: RWL022
+    light:
+      name: Lumière à contrôler
+      description: Sélectionner la lumière ou le groupe de lumières à contrôler.
+      selector:
+        target:
+          entity:
+            - domain: light
+    brightness_step:
+      name: Pas de variation de luminosité (%)
+      description: Valeur en pourcentage de la variation à chaque appui court sur + ou -.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 50
+          step: 5
+          unit_of_measurement: "%"
+    transition_time:
+      name: Durée de transition (secondes)
+      description: Durée de la transition lors des changements de luminosité.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.5
+          unit_of_measurement: s
+  source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/zha-hue-dimmer-light.yaml
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: device
+    domain: zha
+    device_id: !input remote
+    type: remote_button_short_press
+    subtype: turn_on
+    id: on_short
+
+  - platform: device
+    domain: zha
+    device_id: !input remote
+    type: remote_button_long_press
+    subtype: turn_on
+    id: on_long
+
+  - platform: device
+    domain: zha
+    device_id: !input remote
+    type: remote_button_short_press
+    subtype: turn_off
+    id: off_short
+
+  - platform: device
+    domain: zha
+    device_id: !input remote
+    type: remote_button_short_press
+    subtype: dim_up
+    id: dim_up_short
+
+  - platform: device
+    domain: zha
+    device_id: !input remote
+    type: remote_button_long_press
+    subtype: dim_up
+    id: dim_up_long
+
+  - platform: device
+    domain: zha
+    device_id: !input remote
+    type: remote_button_short_press
+    subtype: dim_down
+    id: dim_down_short
+
+  - platform: device
+    domain: zha
+    device_id: !input remote
+    type: remote_button_long_press
+    subtype: dim_down
+    id: dim_down_long
+
+action:
+  - variables:
+      step: !input brightness_step
+      transition: !input transition_time
+
+  - choose:
+      # --- Allumer (appui court) ---
+      - conditions:
+          - condition: trigger
+            id: on_short
+        sequence:
+          - service: light.turn_on
+            target: !input light
+            data:
+              transition: "{{ transition }}"
+
+      # --- Allumer à pleine luminosité (appui long) ---
+      - conditions:
+          - condition: trigger
+            id: on_long
+        sequence:
+          - service: light.turn_on
+            target: !input light
+            data:
+              brightness_pct: 100
+              transition: "{{ transition }}"
+
+      # --- Éteindre (appui court) ---
+      - conditions:
+          - condition: trigger
+            id: off_short
+        sequence:
+          - service: light.turn_off
+            target: !input light
+            data:
+              transition: "{{ transition }}"
+
+      # --- Augmenter luminosité (appui court) ---
+      - conditions:
+          - condition: trigger
+            id: dim_up_short
+        sequence:
+          - service: light.turn_on
+            target: !input light
+            data:
+              brightness_step_pct: "{{ step }}"
+              transition: "{{ transition }}"
+
+      # --- Augmenter luminosité progressivement (appui long) ---
+      # Chaque événement long_press reçu redémarre l'automation (mode: restart)
+      # et incrémente la luminosité d'un pas, créant un effet de variation continue.
+      - conditions:
+          - condition: trigger
+            id: dim_up_long
+        sequence:
+          - service: light.turn_on
+            target: !input light
+            data:
+              brightness_step_pct: "{{ step }}"
+              transition: 0.3
+
+      # --- Baisser luminosité (appui court) ---
+      - conditions:
+          - condition: trigger
+            id: dim_down_short
+        sequence:
+          - service: light.turn_on
+            target: !input light
+            data:
+              brightness_step_pct: "{{ step | int * -1 }}"
+              transition: "{{ transition }}"
+
+      # --- Baisser luminosité progressivement (appui long) ---
+      - conditions:
+          - condition: trigger
+            id: dim_down_long
+        sequence:
+          - service: light.turn_on
+            target: !input light
+            data:
+              brightness_step_pct: "{{ step | int * -1 }}"
+              transition: 0.3
