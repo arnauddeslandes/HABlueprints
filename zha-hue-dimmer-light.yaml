@@ -1,5 +1,5 @@
 blueprint:
-  name: ZHA - Philips Hue Dimmer Switch v2
+  name: ZHA - Philips Hue Dimmer Switch
   description: >
     Contrôle une lumière avec le Philips Hue Dimmer Switch v2 (RWL022) via ZHA.
 
@@ -18,8 +18,7 @@ blueprint:
       selector:
         device:
           integration: zha
-          manufacturer: Signify Netherlands B.V.
-          model: RWL022
+          #manufacturer: Signify Netherlands B.V.
     light:
       name: Lumière à contrôler
       description: Sélectionner la lumière ou le groupe de lumières à contrôler.
