@@ -3,12 +3,15 @@ blueprint:
   description: >
     Contrôle une lumière avec le Philips Hue Dimmer Switch v2 (RWL022) via ZHA.
 
-    - Bouton On (court) : allumer la lumière
-    - Bouton On (long)  : allumer à pleine luminosité (100 %)
-    - Bouton +  (court) : augmenter la luminosité d'un pas
-    - Bouton +  (long)  : augmenter la luminosité progressivement
-    - Bouton -  (court) : baisser la luminosité d'un pas
-    - Bouton -  (long)  : baisser la luminosité progressivement
+    Boutons (numérotation ZHA) :
+      1 = On  |  2 = Dim+  |  3 = Dim-  |  4 = Off
+
+    - Bouton On  (court) : allumer la lumière (dernière luminosité)
+    - Bouton On  (long)  : allumer à pleine luminosité (100 %)
+    - Bouton +   (court) : augmenter la luminosité d'un pas
+    - Bouton +   (long)  : augmenter la luminosité progressivement (répétition)
+    - Bouton -   (court) : baisser la luminosité d'un pas
+    - Bouton -   (long)  : baisser la luminosité progressivement (répétition)
     - Bouton Off (court) : éteindre la lumière
   domain: automation
   input:
@@ -29,7 +32,7 @@ blueprint:
             - domain: light
     brightness_step:
       name: Pas de variation de luminosité (%)
-      description: Valeur en pourcentage de la variation à chaque appui court sur + ou -.
+      description: Valeur en pourcentage de la variation appliquée à chaque appui court ou répétition longue.
       default: 15
       selector:
         number:
@@ -53,75 +56,31 @@ mode: restart
 max_exceeded: silent
 
 trigger:
-  - platform: device
-    domain: zha
-    device_id: !input remote
-    type: remote_button_short_press
-    subtype: turn_on
-    id: on_short
-
-  - platform: device
-    domain: zha
-    device_id: !input remote
-    type: remote_button_long_press
-    subtype: turn_on
-    id: on_long
-
-  - platform: device
-    domain: zha
-    device_id: !input remote
-    type: remote_button_short_press
-    subtype: turn_off
-    id: off_short
-
-  - platform: device
-    domain: zha
-    device_id: !input remote
-    type: remote_button_short_press
-    subtype: dim_up
-    id: dim_up_short
-
-  - platform: device
-    domain: zha
-    device_id: !input remote
-    type: remote_button_long_press
-    subtype: dim_up
-    id: dim_up_long
-
-  - platform: device
-    domain: zha
-    device_id: !input remote
-    type: remote_button_short_press
-    subtype: dim_down
-    id: dim_down_short
-
-  - platform: device
-    domain: zha
-    device_id: !input remote
-    type: remote_button_long_press
-    subtype: dim_down
-    id: dim_down_long
+  - platform: event
+    event_type: zha_event
+    event_data:
+      device_id: !input remote
 
 action:
   - variables:
+      command: "{{ trigger.event.data.command }}"
+      button: "{{ trigger.event.data.args.button | default(0) | int }}"
       step: !input brightness_step
       transition: !input transition_time
 
   - choose:
-      # --- Allumer (appui court) ---
+      # --- On (court) : allumer ---
       - conditions:
-          - condition: trigger
-            id: on_short
+          - "{{ command == 'short_release' and button == 1 }}"
         sequence:
           - service: light.turn_on
             target: !input light
             data:
               transition: "{{ transition }}"
 
-      # --- Allumer à pleine luminosité (appui long) ---
+      # --- On (long/répétition) : 100 % ---
       - conditions:
-          - condition: trigger
-            id: on_long
+          - "{{ command == 'repeat' and button == 1 }}"
         sequence:
           - service: light.turn_on
             target: !input light
@@ -129,20 +88,18 @@ action:
               brightness_pct: 100
               transition: "{{ transition }}"
 
-      # --- Éteindre (appui court) ---
+      # --- Off (court) : éteindre ---
       - conditions:
-          - condition: trigger
-            id: off_short
+          - "{{ command == 'short_release' and button == 4 }}"
         sequence:
           - service: light.turn_off
             target: !input light
             data:
               transition: "{{ transition }}"
 
-      # --- Augmenter luminosité (appui court) ---
+      # --- Dim+ (court) : +step% ---
       - conditions:
-          - condition: trigger
-            id: dim_up_short
+          - "{{ command == 'short_release' and button == 2 }}"
         sequence:
           - service: light.turn_on
             target: !input light
@@ -150,12 +107,11 @@ action:
               brightness_step_pct: "{{ step }}"
               transition: "{{ transition }}"
 
-      # --- Augmenter luminosité progressivement (appui long) ---
-      # Chaque événement long_press reçu redémarre l'automation (mode: restart)
-      # et incrémente la luminosité d'un pas, créant un effet de variation continue.
+      # --- Dim+ (long/répétition) : +step% à chaque répétition ---
+      # L'événement 'repeat' est envoyé en continu tant que le bouton est maintenu.
+      # mode:restart relance l'automation à chaque événement, produisant un effet continu.
       - conditions:
-          - condition: trigger
-            id: dim_up_long
+          - "{{ command == 'repeat' and button == 2 }}"
         sequence:
           - service: light.turn_on
             target: !input light
@@ -163,10 +119,9 @@ action:
               brightness_step_pct: "{{ step }}"
               transition: 0.3
 
-      # --- Baisser luminosité (appui court) ---
+      # --- Dim- (court) : -step% ---
       - conditions:
-          - condition: trigger
-            id: dim_down_short
+          - "{{ command == 'short_release' and button == 3 }}"
         sequence:
           - service: light.turn_on
             target: !input light
@@ -174,10 +129,9 @@ action:
               brightness_step_pct: "{{ step | int * -1 }}"
               transition: "{{ transition }}"
 
-      # --- Baisser luminosité progressivement (appui long) ---
+      # --- Dim- (long/répétition) : -step% à chaque répétition ---
       - conditions:
-          - condition: trigger
-            id: dim_down_long
+          - "{{ command == 'repeat' and button == 3 }}"
         sequence:
           - service: light.turn_on
             target: !input light
