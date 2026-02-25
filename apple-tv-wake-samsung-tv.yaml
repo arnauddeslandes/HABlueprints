@@ -1,0 +1,44 @@
+blueprint:
+  name: Samsung TV - Allumage avec Apple TV
+  description: >
+    Allume automatiquement une Samsung Smart TV lorsqu'une Apple TV démarre
+    (sort du mode veille). L'action n'est déclenchée que si la Samsung TV est
+    éteinte, pour éviter les allumages redondants.
+  domain: automation
+  input:
+    apple_tv:
+      name: Apple TV
+      description: L'entité media_player de l'Apple TV qui déclenche l'automatisation.
+      selector:
+        entity:
+          domain: media_player
+          integration: apple_tv
+    samsung_tv:
+      name: Samsung Smart TV
+      description: L'entité media_player de la Samsung Smart TV à allumer.
+      selector:
+        entity:
+          domain: media_player
+  source_url: https://github.com/arnauddeslandes/HABlueprints/blob/main/apple-tv-wake-samsung-tv.yaml
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - platform: state
+    entity_id: !input apple_tv
+    from: standby
+    not_to:
+      - standby
+      - unavailable
+      - unknown
+
+conditions:
+  - condition: state
+    entity_id: !input samsung_tv
+    state: "off"
+
+actions:
+  - action: media_player.turn_on
+    target:
+      entity_id: !input samsung_tv
