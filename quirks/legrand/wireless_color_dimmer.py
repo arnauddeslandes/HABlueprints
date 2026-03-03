@@ -38,6 +38,7 @@ import zigpy.profiles.zha as zha_p
 from zigpy.quirks import CustomDevice
 from zigpy.zcl.clusters.general import (
     Basic,
+    BinaryInput,
     Identify,
     LevelControl,
     OnOff,
@@ -46,7 +47,6 @@ from zigpy.zcl.clusters.general import (
     PowerConfiguration,
     Scenes,
 )
-from zigpy.zcl.clusters.measurement import BinaryInput
 
 from zhaquirks import CustomCluster
 from zhaquirks.const import (
