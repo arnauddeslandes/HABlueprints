@@ -25,9 +25,9 @@ Supported ZHA device-automation triggers
   long_press   / dim_down             LevelCtrl  "move"             (↓ continuous)
   long_release / dim_up               LevelCtrl  "stop_with_on_off"
   long_release / dim_down             LevelCtrl  "stop"
-  short_press  / color_temp_warm      Scenes  "recall" scene_id=1
-  short_press  / color_temp_neutral   Scenes  "recall" scene_id=2
-  short_press  / color_temp_cool      Scenes  "recall" scene_id=3
+  short_press  / scene_1              Scenes  "recall" scene_id=1
+  short_press  / scene_2              Scenes  "recall" scene_id=2
+  short_press  / scene_3              Scenes  "recall" scene_id=3
 
 Place this file in <config>/custom_zha_quirks/legrand/
 and set `zha: custom_quirks_path: /config/custom_zha_quirks`
@@ -176,10 +176,6 @@ class LegrandWirelessColorDimmer(CustomDevice):
     #
     # Scenes cluster (genScenes)  ──────────────────────────────────────────
     #   The three colour-temperature preset buttons send "recall" commands.
-    #   Typical scene mapping for Legrand Color Ambiance remotes:
-    #     scene_id 1 → warm white  (~2700 K)
-    #     scene_id 2 → neutral white (~4000 K)
-    #     scene_id 3 → cool white  (~6500 K)
 
     device_automation_triggers = {
         # --- On/Off -------------------------------------------------------
@@ -236,19 +232,19 @@ class LegrandWirelessColorDimmer(CustomDevice):
             ENDPOINT_ID: 1,
         },
         # --- Colour-temperature presets (scene recall) ---------------------
-        (SHORT_PRESS, "color_temp_warm"): {
+        (SHORT_PRESS, "scene_1"): {
             COMMAND: "recall",
             CLUSTER_ID: Scenes.cluster_id,
             ENDPOINT_ID: 1,
             ARGS: {"group_id": 0, "scene_id": 1},
         },
-        (SHORT_PRESS, "color_temp_neutral"): {
+        (SHORT_PRESS, "scene_2"): {
             COMMAND: "recall",
             CLUSTER_ID: Scenes.cluster_id,
             ENDPOINT_ID: 1,
             ARGS: {"group_id": 0, "scene_id": 2},
         },
-        (SHORT_PRESS, "color_temp_cool"): {
+        (SHORT_PRESS, "scene_3"): {
             COMMAND: "recall",
             CLUSTER_ID: Scenes.cluster_id,
             ENDPOINT_ID: 1,
