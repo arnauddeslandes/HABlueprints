@@ -1,0 +1,282 @@
+# ESPHome – Acaia BLE Coffee Scale Bridge
+#
+# Compatible scales : Sette W270i, Lunar 2021, Pearl 2021, Pyxis
+# (scales manufactured from 2021 onwards using the new packet format)
+#
+# ── SETUP ────────────────────────────────────────────────────────────────────
+# 1. Find your scale's Bluetooth MAC address:
+#      • Android : install "nRF Connect", scan and look for a device named
+#                  "ACAIA", "LUNAR", "PYXIS" or "SETTE W"
+#      • Home Assistant : Settings → Devices → Bluetooth devices list
+# 2. Replace XX:XX:XX:XX:XX:XX below with your scale's MAC address.
+# 3. Create / update your secrets.yaml with the keys below.
+# 4. Flash to an ESP32 placed within ~5 m of the scale.
+#
+# ── SECRETS REQUIRED ─────────────────────────────────────────────────────────
+#   wifi_ssid, wifi_password, api_encryption_key, ota_password
+#
+# ── PROTOCOL ─────────────────────────────────────────────────────────────────
+# Reverse-engineered Acaia BLE protocol references:
+#   https://github.com/lucapinello/pyacaia
+#   https://github.com/tatemazer/AcaiaArduinoBLE
+#   https://github.com/zweckj/aioacaia
+#
+# Packet structure (new format 2021+):
+#   Byte 0-1 : header  0xEF 0xDD
+#   Byte 2   : command 0x0C = event
+#   Byte 3   : payload length
+#   Byte 4   : event type  5=weight  7=timer  8=button  11=heartbeat
+#   Byte 5   : weight low byte   (little-endian int16)
+#   Byte 6   : weight high byte
+#   Byte 7-8 : reserved
+#   Byte 9   : unit  1→÷10  2→÷100  3→÷1000  4→÷10000
+#   Byte 10  : flags  bit1=negative weight
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  device_name: acaia-scale
+  friendly_name: "Acaia Scale"
+  scale_mac_address: "XX:XX:XX:XX:XX:XX"   # ← replace with your scale's MAC
+
+# ── Core ──────────────────────────────────────────────────────────────────────
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG   # set to INFO once weight values are confirmed correct
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "acaiascale"
+
+captive_portal:
+
+# ── BLE ───────────────────────────────────────────────────────────────────────
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1100ms
+    window: 1100ms
+    active: true
+
+ble_client:
+  - mac_address: ${scale_mac_address}
+    id: acaia_scale
+
+    on_connect:
+      # Wait for GATT service discovery to complete before writing
+      - delay: 500ms
+      - lambda: |-
+          ESP_LOGI("acaia", "Connected – sending initialization packets");
+
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) {
+            ESP_LOGE("acaia", "Write characteristic not found – check MAC / UUIDs");
+            return;
+          }
+
+          // Identify : encode(0x0b, b"HELLO\x00\x00")
+          // cksum1 = 0x48+0x4c+0x4f+0x00 = 0xe3
+          // cksum2 = 0x45+0x4c+0x00      = 0x91
+          uint8_t identify[] = {
+            0xef, 0xdd, 0x0b,
+            0x48, 0x45, 0x4c, 0x4c, 0x4f, 0x00, 0x00,
+            0xe3, 0x91
+          };
+          chr->write_value(identify, sizeof(identify));
+          delay(100);
+
+          // Notification request : encode(0x0c, [0x09,0x00,0x01,0x01,0x02,0x02,0x05,0x03,0x04])
+          // cksum1 = 0x09+0x01+0x02+0x05+0x04 = 0x15
+          // cksum2 = 0x00+0x01+0x02+0x03       = 0x06
+          uint8_t notify_req[] = {
+            0xef, 0xdd, 0x0c,
+            0x09, 0x00, 0x01, 0x01, 0x02, 0x02, 0x05, 0x03, 0x04,
+            0x15, 0x06
+          };
+          chr->write_value(notify_req, sizeof(notify_req));
+
+          ESP_LOGI("acaia", "Init packets sent");
+
+    on_disconnect:
+      - lambda: |-
+          ESP_LOGI("acaia", "Disconnected from Acaia scale");
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+
+sensor:
+  - platform: ble_client
+    ble_client_id: acaia_scale
+    id: acaia_weight
+    name: "Weight"
+    unit_of_measurement: "g"
+    icon: "mdi:weight-gram"
+    accuracy_decimals: 1
+    state_class: measurement
+    service_uuid: "49535343-fe7d-4ae5-8fa9-9fafd205e455"
+    characteristic_uuid: "49535343-1e4d-4bd9-ba61-23c647249616"
+    notify: true
+    lambda: |-
+      if (x.size() < 6) return NAN;
+
+      // Log raw bytes so you can verify the packet layout during commissioning
+      ESP_LOGD("acaia", "RX [%d bytes]: %s",
+               x.size(), format_hex_pretty(x.data(), x.size()).c_str());
+
+      // All Acaia packets start with 0xEF 0xDD
+      if (x[0] != 0xef || x[1] != 0xdd) return NAN;
+
+      uint8_t cmd = x[2];
+
+      // ── New format (2021+): command 0x0C ────────────────────────────────
+      if (cmd == 0x0c && x.size() >= 11) {
+        uint8_t evt = x[4];   // event type
+        if (evt != 0x05) {    // 0x05 = weight event; ignore timer, button, etc.
+          ESP_LOGV("acaia", "Non-weight event 0x%02x, skipping", evt);
+          return NAN;
+        }
+
+        uint16_t raw = (uint16_t)x[5] | ((uint16_t)x[6] << 8);
+        uint8_t  unit  = x[9];
+        bool     neg   = (x.size() > 10) && ((x[10] & 0x02) != 0);
+
+        float divisors[] = {1.0f, 10.0f, 100.0f, 1000.0f, 10000.0f};
+        float div = (unit >= 1 && unit <= 4) ? divisors[unit] : 10.0f;
+
+        float weight = (float)raw / div;
+        if (neg) weight = -weight;
+
+        ESP_LOGD("acaia", "Weight: %.1f g (raw=%d unit=%d neg=%d)", weight, raw, unit, neg);
+        return weight;
+      }
+
+      // ── Old format (pre-2021 Lunar / Pearl): command 0x05 ───────────────
+      if (cmd == 0x05 && x.size() >= 7) {
+        uint16_t raw  = (uint16_t)x[3] | ((uint16_t)x[4] << 8);
+        uint8_t  unit = x[6];
+        float divisors[] = {1.0f, 10.0f, 100.0f, 1000.0f, 10000.0f};
+        float div = (unit >= 1 && unit <= 4) ? divisors[unit] : 10.0f;
+        float weight = (float)raw / div;
+        ESP_LOGD("acaia", "Weight (old fmt): %.1f g (raw=%d unit=%d)", weight, raw, unit);
+        return weight;
+      }
+
+      return NAN;
+
+binary_sensor:
+  - platform: ble_client
+    ble_client_id: acaia_scale
+    id: acaia_connected
+    name: "Scale Connected"
+    icon: "mdi:bluetooth-connect"
+
+# ── Heartbeat ─────────────────────────────────────────────────────────────────
+# The scale drops the connection if it receives no heartbeat within ~3 s.
+
+interval:
+  - interval: 2500ms
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+
+          // Heartbeat : encode(0x00, [0x02, 0x00])
+          uint8_t hb[] = {0xef, 0xdd, 0x00, 0x02, 0x00, 0x02, 0x00};
+          chr->write_value(hb, sizeof(hb));
+          ESP_LOGV("acaia", "Heartbeat sent");
+
+# ── Buttons ───────────────────────────────────────────────────────────────────
+
+button:
+  - platform: template
+    name: "Tare"
+    icon: "mdi:scale-balance"
+    on_press:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) {
+            ESP_LOGW("acaia", "Tare ignored – scale not connected");
+            return;
+          }
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+
+          // Tare : encode(0x04, [])
+          uint8_t tare[] = {0xef, 0xdd, 0x04, 0x00, 0x00};
+          chr->write_value(tare, sizeof(tare));
+          ESP_LOGI("acaia", "Tare sent");
+
+  - platform: template
+    name: "Timer Start"
+    icon: "mdi:timer-play"
+    on_press:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+
+          // Timer start : encode(0x0d, [0x00, 0x00])
+          uint8_t start[] = {0xef, 0xdd, 0x0d, 0x00, 0x00, 0x00, 0x00};
+          chr->write_value(start, sizeof(start));
+          ESP_LOGI("acaia", "Timer start sent");
+
+  - platform: template
+    name: "Timer Stop"
+    icon: "mdi:timer-stop"
+    on_press:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+
+          // Timer stop : encode(0x0d, [0x00, 0x02])
+          uint8_t stop[] = {0xef, 0xdd, 0x0d, 0x00, 0x02, 0x02, 0x00};
+          chr->write_value(stop, sizeof(stop));
+          ESP_LOGI("acaia", "Timer stop sent");
+
+  - platform: template
+    name: "Timer Reset"
+    icon: "mdi:timer-refresh"
+    on_press:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+
+          // Timer reset : encode(0x0d, [0x00, 0x03])
+          uint8_t reset[] = {0xef, 0xdd, 0x0d, 0x00, 0x03, 0x02, 0x01};
+          chr->write_value(reset, sizeof(reset));
+          ESP_LOGI("acaia", "Timer reset sent");
