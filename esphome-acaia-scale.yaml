@@ -9,21 +9,33 @@
 #                  "ACAIA", "LUNAR", "PYXIS" or "SETTE W"
 #      • Home Assistant : Settings → Devices → Bluetooth devices list
 # 2. Replace XX:XX:XX:XX:XX:XX below with your scale's MAC address.
-# 3. Create / update your secrets.yaml with the keys below.
-# 4. Flash to an ESP32 placed within ~5 m of the scale.
+# 3. Set dose_target_default to your usual dose weight (grams).
+# 4. Create / update your secrets.yaml with the keys below.
+# 5. Flash to an ESP32 placed within ~5 m of the scale.
 #
 # ── SECRETS REQUIRED ─────────────────────────────────────────────────────────
 #   wifi_ssid, wifi_password, api_encryption_key, ota_password
 #
+# ── DOSING CYCLE ─────────────────────────────────────────────────────────────
+#   IDLE   : waiting, weight ≈ 0 g
+#     → weight rises above 0.5 g (grinding detected) → DOSING
+#   DOSING : weight increasing, timer running
+#     → weight ≥ target                              → DONE
+#     → weight drops below 0.3 g (aborted early)    → IDLE
+#   DONE   : target reached, timer stopped
+#     → portafilter removed (weight < 0.3 g)         → IDLE
+#
+#   "Start Dose" button : tare + timer reset → IDLE (auto-detects start)
+#
 # ── PROTOCOL ─────────────────────────────────────────────────────────────────
-# Reverse-engineered Acaia BLE protocol references:
+# Reverse-engineered Acaia BLE references:
 #   https://github.com/lucapinello/pyacaia
 #   https://github.com/tatemazer/AcaiaArduinoBLE
 #   https://github.com/zweckj/aioacaia
 #
 # Packet structure (new format 2021+):
 #   Byte 0-1 : header  0xEF 0xDD
-#   Byte 2   : command 0x0C = event
+#   Byte 2   : command 0x0C = event message
 #   Byte 3   : payload length
 #   Byte 4   : event type  5=weight  7=timer  8=button  11=heartbeat
 #   Byte 5   : weight low byte   (little-endian int16)
@@ -37,6 +49,7 @@ substitutions:
   device_name: acaia-scale
   friendly_name: "Acaia Scale"
   scale_mac_address: "XX:XX:XX:XX:XX:XX"   # ← replace with your scale's MAC
+  dose_target_default: "18.0"              # ← default target dose in grams
 
 # ── Core ──────────────────────────────────────────────────────────────────────
 
@@ -69,6 +82,15 @@ wifi:
 
 captive_portal:
 
+# ── Global state ──────────────────────────────────────────────────────────────
+
+globals:
+  # Dosing state machine: 0=IDLE  1=DOSING  2=DONE
+  - id: dose_state
+    type: int
+    restore_value: no
+    initial_value: '0'
+
 # ── BLE ───────────────────────────────────────────────────────────────────────
 
 esp32_ble_tracker:
@@ -97,8 +119,7 @@ ble_client:
           }
 
           // Identify : encode(0x0b, b"HELLO\x00\x00")
-          // cksum1 = 0x48+0x4c+0x4f+0x00 = 0xe3
-          // cksum2 = 0x45+0x4c+0x00      = 0x91
+          // cksum1 = 0x48+0x4c+0x4f+0x00 = 0xe3   cksum2 = 0x45+0x4c+0x00 = 0x91
           uint8_t identify[] = {
             0xef, 0xdd, 0x0b,
             0x48, 0x45, 0x4c, 0x4c, 0x4f, 0x00, 0x00,
@@ -108,8 +129,7 @@ ble_client:
           delay(100);
 
           // Notification request : encode(0x0c, [0x09,0x00,0x01,0x01,0x02,0x02,0x05,0x03,0x04])
-          // cksum1 = 0x09+0x01+0x02+0x05+0x04 = 0x15
-          // cksum2 = 0x00+0x01+0x02+0x03       = 0x06
+          // cksum1 = 0x09+0x01+0x02+0x05+0x04 = 0x15   cksum2 = 0x00+0x01+0x02+0x03 = 0x06
           uint8_t notify_req[] = {
             0xef, 0xdd, 0x0c,
             0x09, 0x00, 0x01, 0x01, 0x02, 0x02, 0x05, 0x03, 0x04,
@@ -121,11 +141,68 @@ ble_client:
 
     on_disconnect:
       - lambda: |-
+          id(dose_state) = 0;
           ESP_LOGI("acaia", "Disconnected from Acaia scale");
+
+# ── Scripts (reusable BLE commands) ──────────────────────────────────────────
+
+script:
+  - id: acaia_tare
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          // Tare : encode(0x04, [])
+          uint8_t cmd[] = {0xef, 0xdd, 0x04, 0x00, 0x00};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("acaia", "Tare sent");
+
+  - id: acaia_timer_start
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          // Timer start : encode(0x0d, [0x00, 0x00])
+          uint8_t cmd[] = {0xef, 0xdd, 0x0d, 0x00, 0x00, 0x00, 0x00};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("acaia", "Timer start sent");
+
+  - id: acaia_timer_stop
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          // Timer stop : encode(0x0d, [0x00, 0x02])
+          uint8_t cmd[] = {0xef, 0xdd, 0x0d, 0x00, 0x02, 0x02, 0x00};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("acaia", "Timer stop sent");
+
+  - id: acaia_timer_reset
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          // Timer reset : encode(0x0d, [0x00, 0x03])
+          uint8_t cmd[] = {0xef, 0xdd, 0x0d, 0x00, 0x03, 0x02, 0x01};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("acaia", "Timer reset sent");
 
 # ── Sensors ───────────────────────────────────────────────────────────────────
 
 sensor:
+  # ── Raw weight from BLE notifications ──────────────────────────────────────
   - platform: ble_client
     ble_client_id: acaia_scale
     id: acaia_weight
@@ -137,6 +214,7 @@ sensor:
     service_uuid: "49535343-fe7d-4ae5-8fa9-9fafd205e455"
     characteristic_uuid: "49535343-1e4d-4bd9-ba61-23c647249616"
     notify: true
+
     lambda: |-
       if (x.size() < 6) return NAN;
 
@@ -144,45 +222,109 @@ sensor:
       ESP_LOGD("acaia", "RX [%d bytes]: %s",
                x.size(), format_hex_pretty(x.data(), x.size()).c_str());
 
-      // All Acaia packets start with 0xEF 0xDD
       if (x[0] != 0xef || x[1] != 0xdd) return NAN;
 
       uint8_t cmd = x[2];
 
-      // ── New format (2021+): command 0x0C ────────────────────────────────
+      // ── New format (2021+): command 0x0C ──────────────────────────────────
       if (cmd == 0x0c && x.size() >= 11) {
-        uint8_t evt = x[4];   // event type
-        if (evt != 0x05) {    // 0x05 = weight event; ignore timer, button, etc.
-          ESP_LOGV("acaia", "Non-weight event 0x%02x, skipping", evt);
-          return NAN;
-        }
+        uint8_t evt = x[4];
+        if (evt != 0x05) return NAN;   // not a weight event
 
-        uint16_t raw = (uint16_t)x[5] | ((uint16_t)x[6] << 8);
-        uint8_t  unit  = x[9];
-        bool     neg   = (x.size() > 10) && ((x[10] & 0x02) != 0);
+        uint16_t raw  = (uint16_t)x[5] | ((uint16_t)x[6] << 8);
+        uint8_t  unit = x[9];
+        bool     neg  = (x.size() > 10) && ((x[10] & 0x02) != 0);
 
         float divisors[] = {1.0f, 10.0f, 100.0f, 1000.0f, 10000.0f};
         float div = (unit >= 1 && unit <= 4) ? divisors[unit] : 10.0f;
+        float w = (float)raw / div;
+        if (neg) w = -w;
 
-        float weight = (float)raw / div;
-        if (neg) weight = -weight;
-
-        ESP_LOGD("acaia", "Weight: %.1f g (raw=%d unit=%d neg=%d)", weight, raw, unit, neg);
-        return weight;
+        ESP_LOGD("acaia", "Weight: %.1f g (raw=%d unit=%d neg=%d)", w, raw, unit, neg);
+        return w;
       }
 
-      // ── Old format (pre-2021 Lunar / Pearl): command 0x05 ───────────────
+      // ── Old format (pre-2021 Lunar / Pearl): command 0x05 ─────────────────
       if (cmd == 0x05 && x.size() >= 7) {
         uint16_t raw  = (uint16_t)x[3] | ((uint16_t)x[4] << 8);
         uint8_t  unit = x[6];
         float divisors[] = {1.0f, 10.0f, 100.0f, 1000.0f, 10000.0f};
         float div = (unit >= 1 && unit <= 4) ? divisors[unit] : 10.0f;
-        float weight = (float)raw / div;
-        ESP_LOGD("acaia", "Weight (old fmt): %.1f g (raw=%d unit=%d)", weight, raw, unit);
-        return weight;
+        float w = (float)raw / div;
+        ESP_LOGD("acaia", "Weight (old fmt): %.1f g (raw=%d unit=%d)", w, raw, unit);
+        return w;
       }
 
       return NAN;
+
+    # ── Dosing state machine ──────────────────────────────────────────────────
+    on_value:
+      - lambda: |-
+          float w      = x;
+          float target = id(dose_target_input).state;
+          int   state  = id(dose_state);
+
+          // ── IDLE → DOSING ──────────────────────────────────────────────────
+          // Grinding detected: weight crosses the noise floor upward.
+          if (state == 0 && w > 0.5f) {
+            id(dose_state) = 1;
+            id(acaia_timer_start).execute();
+            ESP_LOGI("acaia", "Dosing started (auto-detect) – target %.1f g", target);
+          }
+
+          // ── DOSING → DONE ──────────────────────────────────────────────────
+          if (state == 1 && w >= target) {
+            id(dose_state) = 2;
+            id(acaia_timer_stop).execute();
+            ESP_LOGI("acaia", "Dose complete: %.1f g (target %.1f g)", w, target);
+          }
+
+          // ── DOSING → IDLE (aborted) ────────────────────────────────────────
+          // Portafilter removed before reaching target.
+          if (state == 1 && w < 0.3f) {
+            id(dose_state) = 0;
+            id(acaia_timer_stop).execute();
+            ESP_LOGW("acaia", "Dosing aborted – weight dropped to %.1f g", w);
+          }
+
+          // ── DONE → IDLE ────────────────────────────────────────────────────
+          // Portafilter removed after successful dose.
+          if (state == 2 && w < 0.3f) {
+            id(dose_state) = 0;
+            ESP_LOGI("acaia", "Ready for next dose");
+          }
+
+  # ── Remaining weight to target ─────────────────────────────────────────────
+  - platform: template
+    id: dose_remaining
+    name: "Dose Remaining"
+    unit_of_measurement: "g"
+    icon: "mdi:arrow-collapse-down"
+    accuracy_decimals: 1
+    state_class: measurement
+    update_interval: 500ms
+    lambda: |-
+      if (id(dose_state) != 1) return NAN;   // only meaningful while dosing
+      float rem = id(dose_target_input).state - id(acaia_weight).state;
+      return rem > 0.0f ? rem : 0.0f;
+
+  # ── Dose progress percentage ────────────────────────────────────────────────
+  - platform: template
+    id: dose_progress
+    name: "Dose Progress"
+    unit_of_measurement: "%"
+    icon: "mdi:percent"
+    accuracy_decimals: 0
+    state_class: measurement
+    update_interval: 500ms
+    lambda: |-
+      if (id(dose_state) == 0) return 0.0f;
+      float target = id(dose_target_input).state;
+      if (target <= 0.0f) return NAN;
+      float pct = (id(acaia_weight).state / target) * 100.0f;
+      return std::min(pct, 100.0f);
+
+# ── Binary sensors ────────────────────────────────────────────────────────────
 
 binary_sensor:
   - platform: ble_client
@@ -190,6 +332,42 @@ binary_sensor:
     id: acaia_connected
     name: "Scale Connected"
     icon: "mdi:bluetooth-connect"
+
+  - platform: template
+    id: dose_complete
+    name: "Dose Complete"
+    icon: "mdi:check-circle"
+    lambda: return id(dose_state) == 2;
+
+# ── Text sensor (human-readable state) ───────────────────────────────────────
+
+text_sensor:
+  - platform: template
+    id: dose_state_text
+    name: "Dose State"
+    icon: "mdi:state-machine"
+    update_interval: 500ms
+    lambda: |-
+      switch (id(dose_state)) {
+        case 1:  return {"Dosing"};
+        case 2:  return {"Done"};
+        default: return {"Idle"};
+      }
+
+# ── Number input (target dose weight) ────────────────────────────────────────
+
+number:
+  - platform: template
+    id: dose_target_input
+    name: "Dose Target"
+    unit_of_measurement: "g"
+    icon: "mdi:target"
+    min_value: 1.0
+    max_value: 100.0
+    step: 0.5
+    initial_value: ${dose_target_default}
+    optimistic: true
+    restore_value: true   # persisted across reboots
 
 # ── Heartbeat ─────────────────────────────────────────────────────────────────
 # The scale drops the connection if it receives no heartbeat within ~3 s.
@@ -202,7 +380,6 @@ interval:
 
           auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
           auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
-
           auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
           if (chr == nullptr) return;
 
@@ -214,69 +391,39 @@ interval:
 # ── Buttons ───────────────────────────────────────────────────────────────────
 
 button:
+  # Main workflow button: tare + timer reset → ready for next grind
+  - platform: template
+    name: "Start Dose"
+    icon: "mdi:play-circle"
+    on_press:
+      - lambda: |-
+          id(dose_state) = 0;   // reset state; dosing will auto-detect
+          ESP_LOGI("acaia", "Start Dose pressed – taring and resetting timer");
+      - script.execute: acaia_tare
+      - delay: 200ms
+      - script.execute: acaia_timer_reset
+
+  # Manual controls
   - platform: template
     name: "Tare"
     icon: "mdi:scale-balance"
     on_press:
-      - lambda: |-
-          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) {
-            ESP_LOGW("acaia", "Tare ignored – scale not connected");
-            return;
-          }
-          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
-          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
-          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
-          if (chr == nullptr) return;
-
-          // Tare : encode(0x04, [])
-          uint8_t tare[] = {0xef, 0xdd, 0x04, 0x00, 0x00};
-          chr->write_value(tare, sizeof(tare));
-          ESP_LOGI("acaia", "Tare sent");
+      - script.execute: acaia_tare
 
   - platform: template
     name: "Timer Start"
     icon: "mdi:timer-play"
     on_press:
-      - lambda: |-
-          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
-          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
-          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
-          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
-          if (chr == nullptr) return;
-
-          // Timer start : encode(0x0d, [0x00, 0x00])
-          uint8_t start[] = {0xef, 0xdd, 0x0d, 0x00, 0x00, 0x00, 0x00};
-          chr->write_value(start, sizeof(start));
-          ESP_LOGI("acaia", "Timer start sent");
+      - script.execute: acaia_timer_start
 
   - platform: template
     name: "Timer Stop"
     icon: "mdi:timer-stop"
     on_press:
-      - lambda: |-
-          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
-          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
-          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
-          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
-          if (chr == nullptr) return;
-
-          // Timer stop : encode(0x0d, [0x00, 0x02])
-          uint8_t stop[] = {0xef, 0xdd, 0x0d, 0x00, 0x02, 0x02, 0x00};
-          chr->write_value(stop, sizeof(stop));
-          ESP_LOGI("acaia", "Timer stop sent");
+      - script.execute: acaia_timer_stop
 
   - platform: template
     name: "Timer Reset"
     icon: "mdi:timer-refresh"
     on_press:
-      - lambda: |-
-          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
-          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
-          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
-          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
-          if (chr == nullptr) return;
-
-          // Timer reset : encode(0x0d, [0x00, 0x03])
-          uint8_t reset[] = {0xef, 0xdd, 0x0d, 0x00, 0x03, 0x02, 0x01};
-          chr->write_value(reset, sizeof(reset));
-          ESP_LOGI("acaia", "Timer reset sent");
+      - script.execute: acaia_timer_reset
