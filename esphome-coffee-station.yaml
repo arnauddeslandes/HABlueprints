@@ -1,0 +1,615 @@
+# ESPHome – Coffee Station (3 BLE devices on one ESP32)
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │  Device 1 – Acaia scale (integrated in Sette W270i grinder)            │
+# │  Device 2 – Bookoo Themis Ultra (espresso scale under portafilter)     │
+# │  Device 3 – Bookoo Espresso Monitor (pressure gauge)                   │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# ── SETUP ────────────────────────────────────────────────────────────────────
+# 1. Find the Bluetooth MAC address of each device (nRF Connect app or HA).
+# 2. Fill in the three MAC addresses in the substitutions below.
+# 3. Set your usual grind and shot targets.
+# 4. Flash to a single ESP32 placed near your grinder / espresso machine.
+#
+# ── SECRETS REQUIRED ─────────────────────────────────────────────────────────
+#   wifi_ssid, wifi_password, api_encryption_key, ota_password
+#
+# ── WORKFLOW ──────────────────────────────────────────────────────────────────
+#
+#   GRIND  (Acaia on grinder)
+#     Press "Start Grind" → tare → grind starts → auto-tracks to grind_target
+#     State: Idle → Grinding → Done
+#
+#   SHOT   (Bookoo Themis under portafilter + pressure monitor)
+#     Press "Start Shot"  → tare + timer start → extraction starts
+#       → pressure monitor starts automatically
+#       → auto-tracks to shot_target
+#     State: Idle → Extracting → Done
+#       → pressure monitor stops automatically at Done
+#
+# ── NOTE ON BLE CONNECTIONS ──────────────────────────────────────────────────
+# An ESP32 can handle 3 simultaneous BLE connections. Keep the ESP32 within
+# ~5 m of all three devices. If connections drop, try reducing scan window or
+# placing the ESP32 closer.
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  device_name: coffee-station
+  friendly_name: "Coffee Station"
+
+  # ← Replace with your actual MAC addresses
+  acaia_mac:    "XX:XX:XX:XX:XX:XX"   # Acaia scale on Sette W270i
+  bookoo_mac:   "YY:YY:YY:YY:YY:YY"  # Bookoo Themis Ultra
+  pressure_mac: "ZZ:ZZ:ZZ:ZZ:ZZ:ZZ"  # Bookoo Espresso Monitor
+
+  grind_target_default: "18.0"   # grams of ground coffee
+  shot_target_default:  "36.0"   # grams of espresso in the cup
+
+# ── Core ──────────────────────────────────────────────────────────────────────
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG   # set to INFO once everything is confirmed working
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "coffeestation"
+
+captive_portal:
+
+# ── Global state machines ─────────────────────────────────────────────────────
+
+globals:
+  # Grind cycle (Acaia):   0=Idle  1=Grinding   2=Done
+  - id: grind_state
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+  # Shot cycle (Bookoo):   0=Idle  1=Extracting  2=Done
+  - id: shot_state
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+# ── BLE ───────────────────────────────────────────────────────────────────────
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1100ms
+    window: 1100ms
+    active: true
+
+ble_client:
+  # ── Device 1 : Acaia (Sette W270i) ─────────────────────────────────────────
+  - mac_address: ${acaia_mac}
+    id: acaia_scale
+    on_connect:
+      - delay: 500ms
+      - lambda: |-
+          ESP_LOGI("acaia", "Connected – sending init packets");
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) { ESP_LOGE("acaia", "Write characteristic not found"); return; }
+          // Identify : encode(0x0b, b"HELLO\x00\x00")
+          uint8_t identify[] = {0xef,0xdd,0x0b,0x48,0x45,0x4c,0x4c,0x4f,0x00,0x00,0xe3,0x91};
+          chr->write_value(identify, sizeof(identify));
+          delay(100);
+          // Notification request
+          uint8_t notify_req[] = {0xef,0xdd,0x0c,0x09,0x00,0x01,0x01,0x02,0x02,0x05,0x03,0x04,0x15,0x06};
+          chr->write_value(notify_req, sizeof(notify_req));
+          ESP_LOGI("acaia", "Init done");
+    on_disconnect:
+      - lambda: |-
+          id(grind_state) = 0;
+          ESP_LOGI("acaia", "Disconnected");
+
+  # ── Device 2 : Bookoo Themis Ultra ─────────────────────────────────────────
+  - mac_address: ${bookoo_mac}
+    id: bookoo_scale
+    on_connect:
+      - lambda: ESP_LOGI("bookoo", "Connected to Bookoo Themis Ultra");
+    on_disconnect:
+      - lambda: |-
+          id(shot_state) = 0;
+          ESP_LOGI("bookoo", "Disconnected");
+
+  # ── Device 3 : Bookoo Pressure Monitor ─────────────────────────────────────
+  - mac_address: ${pressure_mac}
+    id: bookoo_pressure_client
+    on_connect:
+      - lambda: ESP_LOGI("bookoo_p", "Connected to Bookoo pressure monitor");
+    on_disconnect:
+      - lambda: ESP_LOGI("bookoo_p", "Disconnected");
+
+# ── Scripts ───────────────────────────────────────────────────────────────────
+
+script:
+  # ── Acaia commands ──────────────────────────────────────────────────────────
+  - id: acaia_tare
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0xef, 0xdd, 0x04, 0x00, 0x00};
+          chr->write_value(cmd, sizeof(cmd));
+
+  - id: acaia_timer_start
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0xef, 0xdd, 0x0d, 0x00, 0x00, 0x00, 0x00};
+          chr->write_value(cmd, sizeof(cmd));
+
+  - id: acaia_timer_stop
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0xef, 0xdd, 0x0d, 0x00, 0x02, 0x02, 0x00};
+          chr->write_value(cmd, sizeof(cmd));
+
+  - id: acaia_timer_reset
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0xef, 0xdd, 0x0d, 0x00, 0x03, 0x02, 0x01};
+          chr->write_value(cmd, sizeof(cmd));
+
+  # ── Bookoo scale commands ───────────────────────────────────────────────────
+  - id: bookoo_tare
+    then:
+      - lambda: |-
+          if (id(bookoo_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("00000ffe-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff12-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_scale).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0x03, 0x0A, 0x01, 0x00, 0x00, 0x08};
+          chr->write_value(cmd, sizeof(cmd));
+
+  - id: bookoo_timer_stop
+    then:
+      - lambda: |-
+          if (id(bookoo_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("00000ffe-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff12-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_scale).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0x03, 0x0A, 0x05, 0x00, 0x00, 0x0D};
+          chr->write_value(cmd, sizeof(cmd));
+
+  - id: bookoo_tare_and_start
+    then:
+      - lambda: |-
+          if (id(bookoo_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("00000ffe-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff12-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_scale).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0x03, 0x0A, 0x07, 0x00, 0x00, 0x00};
+          chr->write_value(cmd, sizeof(cmd));
+
+  # ── Bookoo pressure commands ────────────────────────────────────────────────
+  - id: pressure_start
+    then:
+      - lambda: |-
+          if (id(bookoo_pressure_client).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("0000fff0-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff01-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_pressure_client).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0x02, 0x0C, 0x01, 0x00, 0x00, 0x00, 0x0F};
+          chr->write_value(cmd, sizeof(cmd));
+
+  - id: pressure_stop
+    then:
+      - lambda: |-
+          if (id(bookoo_pressure_client).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("0000fff0-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff01-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_pressure_client).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t cmd[] = {0x02, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x0E};
+          chr->write_value(cmd, sizeof(cmd));
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+
+sensor:
+  # ════════════════════════════════════════════════════════════════════════════
+  #  GRIND  (Acaia scale on Sette W270i)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - platform: ble_client
+    ble_client_id: acaia_scale
+    id: grind_weight
+    name: "Grind Weight"
+    unit_of_measurement: "g"
+    icon: "mdi:coffee-maker"
+    accuracy_decimals: 1
+    state_class: measurement
+    service_uuid: "49535343-fe7d-4ae5-8fa9-9fafd205e455"
+    characteristic_uuid: "49535343-1e4d-4bd9-ba61-23c647249616"
+    notify: true
+
+    lambda: |-
+      if (x.size() < 6 || x[0] != 0xef || x[1] != 0xdd) return NAN;
+      uint8_t cmd = x[2];
+      // New format (2021+)
+      if (cmd == 0x0c && x.size() >= 11 && x[4] == 0x05) {
+        uint16_t raw  = (uint16_t)x[5] | ((uint16_t)x[6] << 8);
+        uint8_t  unit = x[9];
+        bool     neg  = x.size() > 10 && (x[10] & 0x02);
+        float    div  = (unit >= 1 && unit <= 4) ? (float[]){1,10,100,1000,10000}[unit] : 10.0f;
+        float    w    = (float)raw / div;
+        return neg ? -w : w;
+      }
+      // Old format (pre-2021)
+      if (cmd == 0x05 && x.size() >= 7) {
+        uint16_t raw = (uint16_t)x[3] | ((uint16_t)x[4] << 8);
+        uint8_t  unit = x[6];
+        float    div  = (unit >= 1 && unit <= 4) ? (float[]){1,10,100,1000,10000}[unit] : 10.0f;
+        return (float)raw / div;
+      }
+      return NAN;
+
+    on_value:
+      - lambda: |-
+          float w      = x;
+          float target = id(grind_target).state;
+          int   state  = id(grind_state);
+
+          if (state == 0 && w > 0.5f) {
+            id(grind_state) = 1;
+            id(acaia_timer_start).execute();
+            ESP_LOGI("acaia", "Grinding started – target %.1f g", target);
+          }
+          if (state == 1 && w >= target) {
+            id(grind_state) = 2;
+            id(acaia_timer_stop).execute();
+            ESP_LOGI("acaia", "Grind done: %.1f g", w);
+          }
+          if (state == 1 && w < 0.3f) {
+            id(grind_state) = 0;
+            id(acaia_timer_stop).execute();
+          }
+          if (state == 2 && w < 0.3f) {
+            id(grind_state) = 0;
+          }
+
+  - platform: template
+    id: grind_remaining
+    name: "Grind Remaining"
+    unit_of_measurement: "g"
+    icon: "mdi:arrow-collapse-down"
+    accuracy_decimals: 1
+    state_class: measurement
+    update_interval: 500ms
+    lambda: |-
+      if (id(grind_state) != 1) return NAN;
+      float r = id(grind_target).state - id(grind_weight).state;
+      return r > 0.0f ? r : 0.0f;
+
+  - platform: template
+    id: grind_progress
+    name: "Grind Progress"
+    unit_of_measurement: "%"
+    icon: "mdi:percent"
+    accuracy_decimals: 0
+    state_class: measurement
+    update_interval: 500ms
+    lambda: |-
+      if (id(grind_state) == 0) return 0.0f;
+      float t = id(grind_target).state;
+      if (t <= 0) return NAN;
+      return std::min(id(grind_weight).state / t * 100.0f, 100.0f);
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  SHOT  (Bookoo Themis Ultra under portafilter)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - platform: ble_client
+    ble_client_id: bookoo_scale
+    id: shot_weight
+    name: "Shot Weight"
+    unit_of_measurement: "g"
+    icon: "mdi:coffee"
+    accuracy_decimals: 1
+    state_class: measurement
+    service_uuid: "00000ffe-0000-1000-8000-00805f9b34fb"
+    characteristic_uuid: "0000ff11-0000-1000-8000-00805f9b34fb"
+    notify: true
+
+    lambda: |-
+      if (x.size() < 20 || x[0] != 0x03 || x[1] != 0x0B) return NAN;
+      uint8_t ck = 0;
+      for (int i = 0; i < 19; i++) ck ^= x[i];
+      if (ck != x[19]) return NAN;
+      uint32_t raw = ((uint32_t)x[7] << 16) | ((uint32_t)x[8] << 8) | x[9];
+      float w = (float)raw / 100.0f;
+      if (x[6] == 0x01) w = -w;
+      uint16_t fr = ((uint16_t)x[11] << 8) | x[12];
+      float flow  = (float)fr / 100.0f;
+      if (x[10] == 0x01) flow = -flow;
+      id(shot_flow_rate).publish_state(flow);
+      id(bookoo_battery).publish_state((float)x[13]);
+      return w;
+
+    on_value:
+      - lambda: |-
+          float w      = x;
+          float target = id(shot_target).state;
+          int   state  = id(shot_state);
+
+          if (state == 0 && w > 0.5f) {
+            id(shot_state) = 1;
+            id(pressure_start).execute();   // auto-start pressure monitoring
+            ESP_LOGI("bookoo", "Extraction started – target %.1f g", target);
+          }
+          if (state == 1 && w >= target) {
+            id(shot_state) = 2;
+            id(bookoo_timer_stop).execute();
+            id(pressure_stop).execute();    // auto-stop pressure monitoring
+            ESP_LOGI("bookoo", "Shot done: %.1f g", w);
+          }
+          if (state == 1 && w < 0.3f) {
+            id(shot_state) = 0;
+            id(bookoo_timer_stop).execute();
+            id(pressure_stop).execute();
+          }
+          if (state == 2 && w < 0.3f) {
+            id(shot_state) = 0;
+          }
+
+  - platform: template
+    id: shot_flow_rate
+    name: "Shot Flow Rate"
+    unit_of_measurement: "g/s"
+    icon: "mdi:water-flow"
+    accuracy_decimals: 2
+    state_class: measurement
+
+  - platform: template
+    id: bookoo_battery
+    name: "Bookoo Scale Battery"
+    unit_of_measurement: "%"
+    icon: "mdi:battery"
+    accuracy_decimals: 0
+    device_class: battery
+    state_class: measurement
+
+  - platform: template
+    id: shot_remaining
+    name: "Shot Remaining"
+    unit_of_measurement: "g"
+    icon: "mdi:arrow-collapse-down"
+    accuracy_decimals: 1
+    state_class: measurement
+    update_interval: 500ms
+    lambda: |-
+      if (id(shot_state) != 1) return NAN;
+      float r = id(shot_target).state - id(shot_weight).state;
+      return r > 0.0f ? r : 0.0f;
+
+  - platform: template
+    id: shot_progress
+    name: "Shot Progress"
+    unit_of_measurement: "%"
+    icon: "mdi:percent"
+    accuracy_decimals: 0
+    state_class: measurement
+    update_interval: 500ms
+    lambda: |-
+      if (id(shot_state) == 0) return 0.0f;
+      float t = id(shot_target).state;
+      if (t <= 0) return NAN;
+      return std::min(id(shot_weight).state / t * 100.0f, 100.0f);
+
+  # ════════════════════════════════════════════════════════════════════════════
+  #  PRESSURE  (Bookoo Espresso Monitor)
+  # ════════════════════════════════════════════════════════════════════════════
+
+  - platform: ble_client
+    ble_client_id: bookoo_pressure_client
+    id: extraction_pressure
+    name: "Extraction Pressure"
+    unit_of_measurement: "bar"
+    icon: "mdi:gauge"
+    accuracy_decimals: 2
+    state_class: measurement
+    service_uuid: "0000fff0-0000-1000-8000-00805f9b34fb"
+    characteristic_uuid: "0000ff02-0000-1000-8000-00805f9b34fb"
+    notify: true
+
+    lambda: |-
+      if (x.size() < 10 || x[0] != 0x02 || x[1] != 0x1B) return NAN;
+      uint8_t ck = 0;
+      for (int i = 0; i < 9; i++) ck ^= x[i];
+      if (ck != x[9]) return NAN;
+      uint16_t raw = ((uint16_t)x[2] << 8) | x[3];
+      id(pressure_battery).publish_state((float)x[4]);
+      return (float)raw / 100.0f;
+
+  - platform: template
+    id: pressure_battery
+    name: "Pressure Monitor Battery"
+    unit_of_measurement: "%"
+    icon: "mdi:battery"
+    accuracy_decimals: 0
+    device_class: battery
+    state_class: measurement
+
+# ── Binary sensors ────────────────────────────────────────────────────────────
+
+binary_sensor:
+  - platform: ble_client
+    ble_client_id: acaia_scale
+    name: "Grinder Scale Connected"
+    icon: "mdi:bluetooth-connect"
+
+  - platform: ble_client
+    ble_client_id: bookoo_scale
+    name: "Espresso Scale Connected"
+    icon: "mdi:bluetooth-connect"
+
+  - platform: ble_client
+    ble_client_id: bookoo_pressure_client
+    name: "Pressure Monitor Connected"
+    icon: "mdi:bluetooth-connect"
+
+  - platform: template
+    name: "Grind Done"
+    icon: "mdi:check-circle"
+    lambda: return id(grind_state) == 2;
+
+  - platform: template
+    name: "Shot Done"
+    icon: "mdi:check-circle"
+    lambda: return id(shot_state) == 2;
+
+# ── Text sensors ──────────────────────────────────────────────────────────────
+
+text_sensor:
+  - platform: template
+    name: "Grind State"
+    icon: "mdi:coffee-maker"
+    update_interval: 500ms
+    lambda: |-
+      switch (id(grind_state)) {
+        case 1:  return {"Grinding"};
+        case 2:  return {"Done"};
+        default: return {"Idle"};
+      }
+
+  - platform: template
+    name: "Shot State"
+    icon: "mdi:coffee"
+    update_interval: 500ms
+    lambda: |-
+      switch (id(shot_state)) {
+        case 1:  return {"Extracting"};
+        case 2:  return {"Done"};
+        default: return {"Idle"};
+      }
+
+# ── Number inputs ─────────────────────────────────────────────────────────────
+
+number:
+  - platform: template
+    id: grind_target
+    name: "Grind Target"
+    unit_of_measurement: "g"
+    icon: "mdi:target"
+    min_value: 1.0
+    max_value: 50.0
+    step: 0.5
+    initial_value: ${grind_target_default}
+    optimistic: true
+    restore_value: true
+
+  - platform: template
+    id: shot_target
+    name: "Shot Target"
+    unit_of_measurement: "g"
+    icon: "mdi:target"
+    min_value: 1.0
+    max_value: 100.0
+    step: 0.5
+    initial_value: ${shot_target_default}
+    optimistic: true
+    restore_value: true
+
+# ── Buttons ───────────────────────────────────────────────────────────────────
+
+button:
+  # ── Main workflow ───────────────────────────────────────────────────────────
+  - platform: template
+    name: "Start Grind"
+    icon: "mdi:coffee-maker"
+    on_press:
+      - lambda: id(grind_state) = 0;
+      - script.execute: acaia_tare
+      - delay: 200ms
+      - script.execute: acaia_timer_reset
+
+  - platform: template
+    name: "Start Shot"
+    icon: "mdi:coffee"
+    on_press:
+      - lambda: id(shot_state) = 0;
+      - script.execute: bookoo_tare_and_start
+      # pressure monitoring starts automatically when weight rises
+
+  # ── Manual / override controls ──────────────────────────────────────────────
+  - platform: template
+    name: "Tare Grinder Scale"
+    icon: "mdi:scale-balance"
+    on_press:
+      - script.execute: acaia_tare
+
+  - platform: template
+    name: "Tare Espresso Scale"
+    icon: "mdi:scale-balance"
+    on_press:
+      - script.execute: bookoo_tare
+
+  - platform: template
+    name: "Start Extraction"
+    icon: "mdi:play-circle"
+    on_press:
+      - script.execute: pressure_start
+
+  - platform: template
+    name: "Stop Extraction"
+    icon: "mdi:stop-circle"
+    on_press:
+      - script.execute: pressure_stop
+
+# ── Heartbeat (Acaia only – required every < 3 s) ────────────────────────────
+
+interval:
+  - interval: 2500ms
+    then:
+      - lambda: |-
+          if (id(acaia_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("49535343-fe7d-4ae5-8fa9-9fafd205e455");
+          auto wchr = espbt::ESPBTUUID::from_raw("49535343-8841-43f4-a8d4-ecbe34729bb3");
+          auto *chr = id(acaia_scale).get_characteristic(svc, wchr);
+          if (!chr) return;
+          uint8_t hb[] = {0xef, 0xdd, 0x00, 0x02, 0x00, 0x02, 0x00};
+          chr->write_value(hb, sizeof(hb));
