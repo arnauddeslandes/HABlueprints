@@ -1,0 +1,410 @@
+# ESPHome – Bookoo Themis Ultra BLE Coffee Scale Bridge
+#
+# Compatible scales : Bookoo Themis Ultra (tested), Themis Mini
+# Device BLE name   : starts with "BOOKOO"
+#
+# ── SETUP ────────────────────────────────────────────────────────────────────
+# 1. Find your scale's Bluetooth MAC address:
+#      • Android : install "nRF Connect", scan for a device named "BOOKOO…"
+#      • Home Assistant : Settings → Devices → Bluetooth devices list
+# 2. Replace XX:XX:XX:XX:XX:XX below with your scale's MAC address.
+# 3. Set dose_target_default to your usual dose weight (grams).
+# 4. Flash to an ESP32 placed within ~5 m of the scale.
+#
+# ── SECRETS REQUIRED ─────────────────────────────────────────────────────────
+#   wifi_ssid, wifi_password, api_encryption_key, ota_password
+#
+# ── DOSING CYCLE ─────────────────────────────────────────────────────────────
+#   IDLE   : waiting, weight ≈ 0 g
+#     → weight rises above 0.5 g (grinding detected)  → DOSING
+#   DOSING : weight increasing, timer running
+#     → weight ≥ target                               → DONE
+#     → weight drops below 0.3 g (aborted early)      → IDLE
+#   DONE   : target reached, timer stopped
+#     → portafilter removed (weight < 0.3 g)           → IDLE
+#
+#   "Start Dose" button : combined Tare + Timer Start in one command → IDLE
+#
+# ── PROTOCOL ─────────────────────────────────────────────────────────────────
+# Source : BooKooCode/OpenSource, makerwolf/bookoo, makerwolf/aiobookoo
+#
+# Service UUID   : 00000ffe-0000-1000-8000-00805f9b34fb
+# Notify char    : 0000ff11-0000-1000-8000-00805f9b34fb  (weight data)
+# Write char     : 0000ff12-0000-1000-8000-00805f9b34fb  (commands)
+#
+# Weight notification (20 bytes):
+#   [0]      0x03  product number
+#   [1]      0x0B  weight data type
+#   [2-4]    elapsed ms  (big-endian uint24)
+#   [5]      unit        0x01=oz  0x02=g
+#   [6]      weight sign 0x00=+   0x01=-
+#   [7-9]    weight×100  (big-endian uint24)  → divide by 100.0
+#   [10]     flow sign   0x00=+   0x01=-
+#   [11-12]  flow×100    (big-endian uint16)  → divide by 100.0  (g/s)
+#   [13]     battery %
+#   [14-15]  standby time (minutes)
+#   [16]     buzzer level (0–5)
+#   [17]     flow smoothing (0=off  1=on)
+#   [18]     auto-stop mode (0=flow  1=removal)
+#   [19]     checksum (XOR of bytes 0–18)
+#
+# Commands (6 bytes):
+#   Tare             : 03 0A 01 00 00 08
+#   Start timer      : 03 0A 04 00 00 0A
+#   Stop timer       : 03 0A 05 00 00 0D
+#   Reset timer      : 03 0A 06 00 00 0C
+#   Tare + Start     : 03 0A 07 00 00 00  ← used by "Start Dose" button
+#
+# No heartbeat required. No authentication/initialization required.
+# ─────────────────────────────────────────────────────────────────────────────
+
+substitutions:
+  device_name: bookoo-scale
+  friendly_name: "Bookoo Scale"
+  scale_mac_address: "XX:XX:XX:XX:XX:XX"   # ← replace with your scale's MAC
+  dose_target_default: "18.0"              # ← default target dose in grams
+
+# ── Core ──────────────────────────────────────────────────────────────────────
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG   # set to INFO once weight values are confirmed correct
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${friendly_name} Fallback"
+    password: "bookooscale"
+
+captive_portal:
+
+# ── Global state ──────────────────────────────────────────────────────────────
+
+globals:
+  # Dosing state machine: 0=IDLE  1=DOSING  2=DONE
+  - id: dose_state
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+# ── BLE ───────────────────────────────────────────────────────────────────────
+
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1100ms
+    window: 1100ms
+    active: true
+
+ble_client:
+  - mac_address: ${scale_mac_address}
+    id: bookoo_scale
+
+    on_connect:
+      - lambda: |-
+          ESP_LOGI("bookoo", "Connected to Bookoo scale");
+          // No initialization sequence required for Bookoo scales.
+
+    on_disconnect:
+      - lambda: |-
+          id(dose_state) = 0;
+          ESP_LOGI("bookoo", "Disconnected from Bookoo scale");
+
+# ── Scripts (reusable BLE commands) ──────────────────────────────────────────
+
+script:
+  - id: bookoo_tare
+    then:
+      - lambda: |-
+          if (id(bookoo_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("00000ffe-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff12-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          uint8_t cmd[] = {0x03, 0x0A, 0x01, 0x00, 0x00, 0x08};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("bookoo", "Tare sent");
+
+  - id: bookoo_timer_start
+    then:
+      - lambda: |-
+          if (id(bookoo_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("00000ffe-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff12-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          uint8_t cmd[] = {0x03, 0x0A, 0x04, 0x00, 0x00, 0x0A};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("bookoo", "Timer start sent");
+
+  - id: bookoo_timer_stop
+    then:
+      - lambda: |-
+          if (id(bookoo_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("00000ffe-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff12-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          uint8_t cmd[] = {0x03, 0x0A, 0x05, 0x00, 0x00, 0x0D};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("bookoo", "Timer stop sent");
+
+  - id: bookoo_timer_reset
+    then:
+      - lambda: |-
+          if (id(bookoo_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("00000ffe-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff12-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          uint8_t cmd[] = {0x03, 0x0A, 0x06, 0x00, 0x00, 0x0C};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("bookoo", "Timer reset sent");
+
+  - id: bookoo_tare_and_start
+    then:
+      - lambda: |-
+          if (id(bookoo_scale).state() != espbt::ClientState::ESTABLISHED) return;
+          auto svc  = espbt::ESPBTUUID::from_raw("00000ffe-0000-1000-8000-00805f9b34fb");
+          auto wchr = espbt::ESPBTUUID::from_raw("0000ff12-0000-1000-8000-00805f9b34fb");
+          auto *chr = id(bookoo_scale).get_characteristic(svc, wchr);
+          if (chr == nullptr) return;
+          // Tare + Start timer in a single command
+          uint8_t cmd[] = {0x03, 0x0A, 0x07, 0x00, 0x00, 0x00};
+          chr->write_value(cmd, sizeof(cmd));
+          ESP_LOGI("bookoo", "Tare + Start sent");
+
+# ── Sensors ───────────────────────────────────────────────────────────────────
+
+sensor:
+  # ── Weight + flow rate from BLE notifications ───────────────────────────────
+  - platform: ble_client
+    ble_client_id: bookoo_scale
+    id: bookoo_weight
+    name: "Weight"
+    unit_of_measurement: "g"
+    icon: "mdi:weight-gram"
+    accuracy_decimals: 1
+    state_class: measurement
+    service_uuid: "00000ffe-0000-1000-8000-00805f9b34fb"
+    characteristic_uuid: "0000ff11-0000-1000-8000-00805f9b34fb"
+    notify: true
+
+    lambda: |-
+      if (x.size() < 20) return NAN;
+
+      ESP_LOGD("bookoo", "RX [%d bytes]: %s",
+               x.size(), format_hex_pretty(x.data(), x.size()).c_str());
+
+      // Validate header
+      if (x[0] != 0x03 || x[1] != 0x0B) {
+        ESP_LOGW("bookoo", "Unexpected header: %02X %02X", x[0], x[1]);
+        return NAN;
+      }
+
+      // Verify XOR checksum
+      uint8_t cksum = 0;
+      for (int i = 0; i < 19; i++) cksum ^= x[i];
+      if (cksum != x[19]) {
+        ESP_LOGW("bookoo", "Checksum error: computed %02X, got %02X", cksum, x[19]);
+        return NAN;
+      }
+
+      // Weight (bytes 7-9, big-endian uint24, ÷100)
+      uint32_t raw = ((uint32_t)x[7] << 16) | ((uint32_t)x[8] << 8) | x[9];
+      float weight = (float)raw / 100.0f;
+      if (x[6] == 0x01) weight = -weight;
+
+      // Flow rate (bytes 11-12, big-endian uint16, ÷100) – published separately
+      uint16_t flow_raw = ((uint16_t)x[11] << 8) | x[12];
+      float flow = (float)flow_raw / 100.0f;
+      if (x[10] == 0x01) flow = -flow;
+      id(bookoo_flow_rate).publish_state(flow);
+
+      // Battery – published separately
+      id(bookoo_battery).publish_state((float)x[13]);
+
+      ESP_LOGD("bookoo", "Weight: %.2f g  Flow: %.2f g/s  Bat: %d%%",
+               weight, flow, x[13]);
+      return weight;
+
+    on_value:
+      - lambda: |-
+          float w      = x;
+          float target = id(dose_target_input).state;
+          int   state  = id(dose_state);
+
+          // IDLE → DOSING : grinding detected
+          if (state == 0 && w > 0.5f) {
+            id(dose_state) = 1;
+            id(bookoo_timer_start).execute();
+            ESP_LOGI("bookoo", "Dosing started (auto-detect) – target %.1f g", target);
+          }
+
+          // DOSING → DONE : target reached
+          if (state == 1 && w >= target) {
+            id(dose_state) = 2;
+            id(bookoo_timer_stop).execute();
+            ESP_LOGI("bookoo", "Dose complete: %.2f g (target %.1f g)", w, target);
+          }
+
+          // DOSING → IDLE : aborted (portafilter removed early)
+          if (state == 1 && w < 0.3f) {
+            id(dose_state) = 0;
+            id(bookoo_timer_stop).execute();
+            ESP_LOGW("bookoo", "Dosing aborted");
+          }
+
+          // DONE → IDLE : portafilter removed
+          if (state == 2 && w < 0.3f) {
+            id(dose_state) = 0;
+            ESP_LOGI("bookoo", "Ready for next dose");
+          }
+
+  # ── Flow rate (populated from weight notification lambda) ───────────────────
+  - platform: template
+    id: bookoo_flow_rate
+    name: "Flow Rate"
+    unit_of_measurement: "g/s"
+    icon: "mdi:water-flow"
+    accuracy_decimals: 2
+    state_class: measurement
+
+  # ── Battery (populated from weight notification lambda) ─────────────────────
+  - platform: template
+    id: bookoo_battery
+    name: "Battery"
+    unit_of_measurement: "%"
+    icon: "mdi:battery"
+    accuracy_decimals: 0
+    device_class: battery
+    state_class: measurement
+
+  # ── Remaining weight to target ──────────────────────────────────────────────
+  - platform: template
+    id: dose_remaining
+    name: "Dose Remaining"
+    unit_of_measurement: "g"
+    icon: "mdi:arrow-collapse-down"
+    accuracy_decimals: 1
+    state_class: measurement
+    update_interval: 500ms
+    lambda: |-
+      if (id(dose_state) != 1) return NAN;
+      float rem = id(dose_target_input).state - id(bookoo_weight).state;
+      return rem > 0.0f ? rem : 0.0f;
+
+  # ── Dose progress percentage ────────────────────────────────────────────────
+  - platform: template
+    id: dose_progress
+    name: "Dose Progress"
+    unit_of_measurement: "%"
+    icon: "mdi:percent"
+    accuracy_decimals: 0
+    state_class: measurement
+    update_interval: 500ms
+    lambda: |-
+      if (id(dose_state) == 0) return 0.0f;
+      float target = id(dose_target_input).state;
+      if (target <= 0.0f) return NAN;
+      float pct = (id(bookoo_weight).state / target) * 100.0f;
+      return std::min(pct, 100.0f);
+
+# ── Binary sensors ────────────────────────────────────────────────────────────
+
+binary_sensor:
+  - platform: ble_client
+    ble_client_id: bookoo_scale
+    id: bookoo_connected
+    name: "Scale Connected"
+    icon: "mdi:bluetooth-connect"
+
+  - platform: template
+    id: dose_complete
+    name: "Dose Complete"
+    icon: "mdi:check-circle"
+    lambda: return id(dose_state) == 2;
+
+# ── Text sensor (human-readable state) ───────────────────────────────────────
+
+text_sensor:
+  - platform: template
+    id: dose_state_text
+    name: "Dose State"
+    icon: "mdi:state-machine"
+    update_interval: 500ms
+    lambda: |-
+      switch (id(dose_state)) {
+        case 1:  return {"Dosing"};
+        case 2:  return {"Done"};
+        default: return {"Idle"};
+      }
+
+# ── Number input (target dose weight) ────────────────────────────────────────
+
+number:
+  - platform: template
+    id: dose_target_input
+    name: "Dose Target"
+    unit_of_measurement: "g"
+    icon: "mdi:target"
+    min_value: 1.0
+    max_value: 100.0
+    step: 0.5
+    initial_value: ${dose_target_default}
+    optimistic: true
+    restore_value: true
+
+# ── Buttons ───────────────────────────────────────────────────────────────────
+
+button:
+  # Main workflow: tare + start timer in one atomic command
+  - platform: template
+    name: "Start Dose"
+    icon: "mdi:play-circle"
+    on_press:
+      - lambda: |-
+          id(dose_state) = 0;
+          ESP_LOGI("bookoo", "Start Dose pressed");
+      - script.execute: bookoo_tare_and_start
+
+  # Manual controls
+  - platform: template
+    name: "Tare"
+    icon: "mdi:scale-balance"
+    on_press:
+      - script.execute: bookoo_tare
+
+  - platform: template
+    name: "Timer Start"
+    icon: "mdi:timer-play"
+    on_press:
+      - script.execute: bookoo_timer_start
+
+  - platform: template
+    name: "Timer Stop"
+    icon: "mdi:timer-stop"
+    on_press:
+      - script.execute: bookoo_timer_stop
+
+  - platform: template
+    name: "Timer Reset"
+    icon: "mdi:timer-refresh"
+    on_press:
+      - script.execute: bookoo_timer_reset
