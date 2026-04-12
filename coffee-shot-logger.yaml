@@ -1,0 +1,305 @@
+blueprint:
+  name: "Coffee Shot Logger"
+  description: >
+    Historise chaque shot espresso : date/heure, dose moulue (Acaia),
+    poids en tasse (Bookoo Themis), pression (Bookoo Monitor), ratio et durée.
+
+
+    ━━━ HELPERS À CRÉER AVANT UTILISATION ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+    Dans Paramètres → Assistants, créer :
+
+
+    1. Date/Heure – "Coffee Shot Start"
+       entity_id : input_datetime.coffee_shot_start
+
+
+    2. Nombre     – "Coffee Last Grind Weight"
+       entity_id : input_number.coffee_last_grind_weight
+       Min : 0 | Max : 100 | Pas : 0.1 | Unité : g
+
+
+    3. Texte      – "Coffee Last Shot"
+       entity_id : input_text.coffee_last_shot
+       Longueur max : 500
+
+
+    ━━━ FONCTIONNEMENT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+    • Grind Done   → capture le poids de dose (Acaia)
+
+    • Shot Start   → enregistre l'heure de début d'extraction
+
+    • Shot Done    → compile le bilan et :
+        – met à jour input_text.coffee_last_shot (JSON)
+        – déclenche l'événement coffee_shot_logged
+        – écrit dans le logbook (historique permanent)
+        – envoie une notification mobile (optionnel)
+
+
+    Les courbes pression / poids en tasse sont dans l'historique HA
+    (recorder). Les timestamps start/end stockés dans input_text permettent
+    de les afficher via la Plotly Graph Card (voir ci-dessous).
+
+
+    ━━━ CARTE LOVELACE – COURBE DU SHOT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+    Installer la carte HACS "Plotly Graph Card", puis ajouter dans votre
+    dashboard (remplacer les entity_id par les vôtres) :
+
+
+    ```yaml
+
+    type: custom:plotly-graph
+
+    title: Dernier shot
+
+    hours_to_show: 0
+
+    refresh_interval: 0
+
+    time_offset: >-
+      {{ ((now() -
+      (states('input_text.coffee_last_shot') | from_json).start
+      | as_datetime | as_local).total_seconds() / 3600) | round(4) }}h
+
+    defaults:
+      entity:
+        show:
+          legend: true
+
+    entities:
+      - entity: sensor.extraction_pressure
+        name: Pression (bar)
+        unit_of_measurement: bar
+        yaxis: y1
+        fill: tozeroy
+        fillcolor: rgba(255,100,0,0.15)
+        line:
+          color: rgb(255,100,0)
+          width: 2
+      - entity: sensor.shot_weight
+        name: Poids tasse (g)
+        unit_of_measurement: g
+        yaxis: y2
+        line:
+          color: rgb(0,150,255)
+          width: 2
+
+    layout:
+      yaxis:
+        title: Pression (bar)
+        range: [0, 12]
+        fixedrange: true
+      yaxis2:
+        title: Poids (g)
+        overlaying: y
+        side: right
+        fixedrange: true
+    ```
+
+
+    ━━━ ÉVÉNEMENT coffee_shot_logged ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+    Payload de l'événement (utilisable par Node-RED, AppDaemon, webhook…) :
+
+      timestamp, grind_weight_g, shot_weight_g, brew_ratio,
+      duration_s, pressure_bar, shot_start, shot_end
+
+  domain: automation
+  homeassistant:
+    min_version: "2023.4.0"
+
+  input:
+    grind_state_sensor:
+      name: "Capteur état mouture (Acaia)"
+      description: "Texte : Idle / Grinding / Done"
+      selector:
+        entity:
+          domain: sensor
+
+    shot_state_sensor:
+      name: "Capteur état shot (Bookoo Themis)"
+      description: "Texte : Idle / Extracting / Done"
+      selector:
+        entity:
+          domain: sensor
+
+    grind_weight_sensor:
+      name: "Capteur poids mouture (Acaia)"
+      description: "Poids en grammes sur la balance du moulin"
+      selector:
+        entity:
+          domain: sensor
+
+    shot_weight_sensor:
+      name: "Capteur poids tasse (Bookoo Themis)"
+      description: "Poids en grammes dans la tasse"
+      selector:
+        entity:
+          domain: sensor
+
+    pressure_sensor:
+      name: "Capteur pression (Bookoo Monitor)"
+      description: "Pression en bar"
+      selector:
+        entity:
+          domain: sensor
+
+    shot_start_helper:
+      name: "Helper heure de début (input_datetime)"
+      description: "input_datetime.coffee_shot_start – à créer avant usage"
+      selector:
+        entity:
+          domain: input_datetime
+
+    grind_weight_capture:
+      name: "Helper poids dose capturé (input_number)"
+      description: "input_number.coffee_last_grind_weight – à créer avant usage"
+      selector:
+        entity:
+          domain: input_number
+
+    shot_data_helper:
+      name: "Helper dernier shot (input_text)"
+      description: "input_text.coffee_last_shot – à créer avant usage (max 500)"
+      selector:
+        entity:
+          domain: input_text
+
+    notify_target:
+      name: "Service de notification (optionnel)"
+      description: >
+        Nom du service notify pour envoyer le résumé du shot sur mobile
+        (ex: mobile_app_mon_telephone). Laisser vide pour désactiver.
+      default: ""
+      selector:
+        text: {}
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+mode: single
+
+variables:
+  grind_weight_entity:   !input grind_weight_sensor
+  shot_weight_entity:    !input shot_weight_sensor
+  pressure_entity:       !input pressure_sensor
+  shot_start_entity:     !input shot_start_helper
+  grind_capture_entity:  !input grind_weight_capture
+  shot_data_entity:      !input shot_data_helper
+  notify_svc:            !input notify_target
+
+trigger:
+  # Mouture terminée → capturer le poids de dose
+  - platform: state
+    entity_id: !input grind_state_sensor
+    to: "Done"
+    id: grind_done
+
+  # Extraction démarrée → mémoriser l'heure de début
+  - platform: state
+    entity_id: !input shot_state_sensor
+    to: "Extracting"
+    id: shot_start
+
+  # Extraction terminée → enregistrer le shot
+  - platform: state
+    entity_id: !input shot_state_sensor
+    to: "Done"
+    id: shot_done
+
+action:
+  - choose:
+
+    # ── Grind Done : snapshot du poids de dose ────────────────────────────────
+    - conditions:
+        - condition: trigger
+          id: grind_done
+      sequence:
+        - service: input_number.set_value
+          target:
+            entity_id: !input grind_weight_capture
+          data:
+            value: "{{ states(grind_weight_entity) | float(0) }}"
+
+    # ── Shot Start : mémoriser l'heure de début ───────────────────────────────
+    - conditions:
+        - condition: trigger
+          id: shot_start
+      sequence:
+        - service: input_datetime.set_datetime
+          target:
+            entity_id: !input shot_start_helper
+          data:
+            datetime: "{{ now().isoformat() }}"
+
+    # ── Shot Done : compiler et historiser ────────────────────────────────────
+    - conditions:
+        - condition: trigger
+          id: shot_done
+      sequence:
+        - variables:
+            _start_dt:   "{{ states(shot_start_entity) | as_datetime | as_local }}"
+            _end_dt:     "{{ now() }}"
+            _duration_s: "{{ (_end_dt - _start_dt).total_seconds() | int }}"
+            _grind_g:    "{{ states(grind_capture_entity) | float(0) | round(1) }}"
+            _shot_g:     "{{ states(shot_weight_entity)   | float(0) | round(1) }}"
+            _pressure:   "{{ states(pressure_entity)      | float(0) | round(2) }}"
+            _ratio:      >-
+              {{ (_shot_g / _grind_g) | round(2) if _grind_g > 0 else 0 }}
+
+        # ── Stocker le bilan du shot (JSON) ─────────────────────────────────
+        - service: input_text.set_value
+          target:
+            entity_id: !input shot_data_helper
+          data:
+            value: >-
+              {"ts":"{{ _end_dt.isoformat() }}",
+               "date":"{{ _end_dt.strftime('%d/%m/%Y') }}",
+               "time":"{{ _end_dt.strftime('%H:%M') }}",
+               "grind_g":{{ _grind_g }},
+               "shot_g":{{ _shot_g }},
+               "ratio":{{ _ratio }},
+               "duration_s":{{ _duration_s }},
+               "pressure_bar":{{ _pressure }},
+               "start":"{{ _start_dt.isoformat() }}",
+               "end":"{{ _end_dt.isoformat() }}"}
+
+        # ── Déclencher l'événement coffee_shot_logged ────────────────────────
+        - event: coffee_shot_logged
+          event_data:
+            timestamp:      "{{ _end_dt.isoformat() }}"
+            grind_weight_g: "{{ _grind_g }}"
+            shot_weight_g:  "{{ _shot_g }}"
+            brew_ratio:     "{{ _ratio }}"
+            duration_s:     "{{ _duration_s }}"
+            pressure_bar:   "{{ _pressure }}"
+            shot_start:     "{{ _start_dt.isoformat() }}"
+            shot_end:       "{{ _end_dt.isoformat() }}"
+
+        # ── Entrée permanente dans le logbook ────────────────────────────────
+        - service: logbook.log
+          data:
+            name: "☕ Espresso"
+            message: >-
+              {{ _end_dt.strftime('%d/%m/%Y %H:%M') }} —
+              Dose : {{ _grind_g }} g → Tasse : {{ _shot_g }} g
+              (1:{{ _ratio }}) | {{ _duration_s }} s | {{ _pressure }} bar
+            entity_id: !input shot_weight_sensor
+
+        # ── Notification mobile (optionnel) ──────────────────────────────────
+        - if:
+            - condition: template
+              value_template: "{{ notify_svc != '' }}"
+          then:
+            - service: "notify.{{ notify_svc }}"
+              data:
+                title: "☕ Shot terminé"
+                message: >-
+                  {{ _end_dt.strftime('%H:%M') }} —
+                  Dose {{ _grind_g }} g → Tasse {{ _shot_g }} g
+                  (1:{{ _ratio }}) en {{ _duration_s }} s — {{ _pressure }} bar
