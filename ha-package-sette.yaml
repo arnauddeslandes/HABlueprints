@@ -1,0 +1,242 @@
+# HA Package – Sette W270i (Acaia scale) sensors
+#
+# Fournit les helpers, capteurs dérivés et statistiques de dose
+# pour la balance intégrée dans le moulin Sette W270i.
+#
+# ── INSTALLATION ─────────────────────────────────────────────────────────────
+# Option A – Package (recommandé)
+#   1. Créer le dossier  <config>/packages/
+#   2. Copier ce fichier dans <config>/packages/coffee_sette.yaml
+#   3. Ajouter dans configuration.yaml :
+#        homeassistant:
+#          packages: !include_dir_named packages
+#   4. Redémarrer Home Assistant
+#
+# Option B – inline
+#   Copier chaque section dans configuration.yaml
+#
+# ── PRÉREQUIS ────────────────────────────────────────────────────────────────
+# • ESP32 flashé avec esphome-coffee-station.yaml (ou esphome-acaia-scale.yaml)
+#   intégré dans HA (device : "Coffee Station")
+# • Blueprint coffee-shot-logger.yaml configuré pour utiliser
+#   les helpers définis ici
+#
+# ── ENTITY IDS ESPHOME ATTENDUS ──────────────────────────────────────────────
+# (device_name: coffee-station dans l'ESPHome YAML)
+#
+#   sensor.coffee_station_grind_weight      poids live (g)
+#   sensor.coffee_station_grind_remaining   restant avant cible (g)
+#   sensor.coffee_station_grind_progress    avancement (%)
+#   sensor.coffee_station_grind_state       Idle / Grinding / Done
+#   binary_sensor.coffee_station_grind_done  vrai quand cible atteinte
+#   number.coffee_station_grind_target      cible de dose (g)
+#   button.coffee_station_start_grind       Tare + reset timer
+#   button.coffee_station_tare_grinder_scale Tare seule
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+# Requis par le blueprint coffee-shot-logger
+
+input_number:
+  coffee_last_grind_weight:
+    name: "Dose capturée"
+    icon: mdi:weight-gram
+    min: 0
+    max: 100
+    step: 0.1
+    unit_of_measurement: "g"
+
+input_datetime:
+  coffee_shot_start:
+    name: "Début extraction"
+    icon: mdi:timer-play-outline
+    has_date: true
+    has_time: true
+
+input_text:
+  coffee_last_shot:
+    name: "Dernier shot"
+    icon: mdi:coffee
+    max: 500
+    # Contient un JSON : {"ts","date","time","grind_g","shot_g","ratio",
+    #                     "duration_s","pressure_bar","start","end"}
+
+# ── Compteur de shots ─────────────────────────────────────────────────────────
+
+counter:
+  coffee_shots_total:
+    name: "Shots au total"
+    icon: mdi:counter
+    step: 1
+    restore: true
+
+# ── Capteurs de statistiques (plateforme statistics) ─────────────────────────
+# Calculés sur les valeurs successives de input_number.coffee_last_grind_weight
+# (mise à jour à chaque mouture terminée par le blueprint)
+
+sensor:
+  - platform: statistics
+    name: "Dose – Moyenne 30 j"
+    unique_id: coffee_grind_mean_30d
+    entity_id: input_number.coffee_last_grind_weight
+    state_characteristic: mean
+    max_age:
+      days: 30
+    precision: 1
+
+  - platform: statistics
+    name: "Dose – Écart-type 30 j"
+    unique_id: coffee_grind_stddev_30d
+    entity_id: input_number.coffee_last_grind_weight
+    state_characteristic: standard_deviation
+    max_age:
+      days: 30
+    precision: 2
+
+  - platform: statistics
+    name: "Dose – Min 30 j"
+    unique_id: coffee_grind_min_30d
+    entity_id: input_number.coffee_last_grind_weight
+    state_characteristic: value_min
+    max_age:
+      days: 30
+    precision: 1
+
+  - platform: statistics
+    name: "Dose – Max 30 j"
+    unique_id: coffee_grind_max_30d
+    entity_id: input_number.coffee_last_grind_weight
+    state_characteristic: value_max
+    max_age:
+      days: 30
+    precision: 1
+
+  - platform: statistics
+    name: "Dose – Échantillons 30 j"
+    unique_id: coffee_grind_count_30d
+    entity_id: input_number.coffee_last_grind_weight
+    state_characteristic: count
+    max_age:
+      days: 30
+
+  # Shots effectués aujourd'hui (nombre de fois où l'état "Done" a été atteint)
+  - platform: history_stats
+    name: "Shots aujourd'hui"
+    unique_id: coffee_shots_today
+    entity_id: sensor.coffee_station_grind_state
+    state: "Done"
+    type: count
+    start: "{{ now().replace(hour=0, minute=0, second=0, microsecond=0) }}"
+    end: "{{ now() }}"
+
+# ── Capteurs template (dérivés du dernier shot) ───────────────────────────────
+
+template:
+  - sensor:
+      - name: "Dernier shot – Date"
+        unique_id: coffee_last_shot_date
+        icon: mdi:calendar-clock
+        state: >
+          {% set raw = states('input_text.coffee_last_shot') %}
+          {% if raw not in ['', 'unavailable', 'unknown', 'none'] %}
+            {% set d = raw | from_json %}
+            {{ d.get('date', '') ~ ' ' ~ d.get('time', '') }}
+          {% else %}
+            -
+          {% endif %}
+
+      - name: "Dernier shot – Dose"
+        unique_id: coffee_last_shot_grind_g
+        icon: mdi:coffee-maker
+        unit_of_measurement: "g"
+        state_class: measurement
+        state: >
+          {% set raw = states('input_text.coffee_last_shot') %}
+          {% if raw not in ['', 'unavailable', 'unknown', 'none'] %}
+            {{ (raw | from_json).get('grind_g', none) }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+
+      - name: "Dernier shot – Tasse"
+        unique_id: coffee_last_shot_shot_g
+        icon: mdi:coffee
+        unit_of_measurement: "g"
+        state_class: measurement
+        state: >
+          {% set raw = states('input_text.coffee_last_shot') %}
+          {% if raw not in ['', 'unavailable', 'unknown', 'none'] %}
+            {{ (raw | from_json).get('shot_g', none) }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+
+      - name: "Dernier shot – Ratio"
+        unique_id: coffee_last_shot_ratio
+        icon: mdi:approximately-equal
+        state: >
+          {% set raw = states('input_text.coffee_last_shot') %}
+          {% if raw not in ['', 'unavailable', 'unknown', 'none'] %}
+            1 : {{ (raw | from_json).get('ratio', '?') }}
+          {% else %}
+            -
+          {% endif %}
+
+      - name: "Dernier shot – Durée"
+        unique_id: coffee_last_shot_duration_s
+        icon: mdi:timer-outline
+        unit_of_measurement: "s"
+        state_class: measurement
+        state: >
+          {% set raw = states('input_text.coffee_last_shot') %}
+          {% if raw not in ['', 'unavailable', 'unknown', 'none'] %}
+            {{ (raw | from_json).get('duration_s', none) }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+
+      - name: "Dernier shot – Pression"
+        unique_id: coffee_last_shot_pressure
+        icon: mdi:gauge
+        unit_of_measurement: "bar"
+        state_class: measurement
+        state: >
+          {% set raw = states('input_text.coffee_last_shot') %}
+          {% if raw not in ['', 'unavailable', 'unknown', 'none'] %}
+            {{ (raw | from_json).get('pressure_bar', none) }}
+          {% else %}
+            {{ none }}
+          {% endif %}
+
+      # Résumé texte pour affichage rapide dans une carte HA
+      - name: "Dernier shot – Résumé"
+        unique_id: coffee_last_shot_summary
+        icon: mdi:text-box-outline
+        state: >
+          {% set raw = states('input_text.coffee_last_shot') %}
+          {% if raw not in ['', 'unavailable', 'unknown', 'none'] %}
+            {% set d = raw | from_json %}
+            {{ d.get('date','') }} {{ d.get('time','') }}
+            — Dose {{ d.get('grind_g','?') }} g
+            → Tasse {{ d.get('shot_g','?') }} g
+            (1:{{ d.get('ratio','?') }})
+            {{ d.get('duration_s','?') }} s
+            • {{ d.get('pressure_bar','?') }} bar
+          {% else %}
+            Aucun shot enregistré
+          {% endif %}
+
+# ── Automation : incrémenter le compteur à chaque shot ───────────────────────
+
+automation:
+  - id: coffee_increment_shot_counter
+    alias: "Coffee – Incrémenter compteur de shots"
+    description: "Incrémente counter.coffee_shots_total à chaque shot terminé"
+    trigger:
+      - platform: event
+        event_type: coffee_shot_logged
+    action:
+      - service: counter.increment
+        target:
+          entity_id: counter.coffee_shots_total
+    mode: single
